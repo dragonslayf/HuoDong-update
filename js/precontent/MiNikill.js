@@ -40940,11 +40940,56 @@ const packs = function () {
                             }
                             return node;
                         };
+                        function setTouchDragAnchor(node, piece, sourceNode, clientX, clientY) {
+                            // 触屏拖拽应保留用户在库存方块上的实际按压点，而不是把所有
+                            // 异形块都强行按实体格重心对齐。否则按在右下方实体格时，整块
+                            // 会在抬起的一瞬间跳到手指左上方。
+                            let nearest = null;
+                            const box = sourceNode?.firstElementChild;
+                            for (let y = 0; y < piece.shape.length; y++) {
+                                for (let x = 0; x < piece.shape[y].length; x++) {
+                                    if (!piece.shape[y][x]) continue;
+                                    const cell = box?.children?.[y]?.children?.[x];
+                                    if (!cell) continue;
+                                    const rect = cell.getBoundingClientRect();
+                                    const outsideX = clientX < rect.left ? rect.left - clientX : clientX > rect.right ? clientX - rect.right : 0;
+                                    const outsideY = clientY < rect.top ? rect.top - clientY : clientY > rect.bottom ? clientY - rect.bottom : 0;
+                                    const centerX = (rect.left + rect.right) / 2;
+                                    const centerY = (rect.top + rect.bottom) / 2;
+                                    const outsideDistance = outsideX * outsideX + outsideY * outsideY;
+                                    const centerDistance = (clientX - centerX) ** 2 + (clientY - centerY) ** 2;
+                                    if (!nearest || outsideDistance < nearest.outsideDistance || (outsideDistance === nearest.outsideDistance && centerDistance < nearest.centerDistance)) {
+                                        nearest = { x, y, rect, outsideDistance, centerDistance };
+                                    }
+                                }
+                            }
+                            if (!nearest) {
+                                node.touchAnchorX = node.touchCenterX;
+                                node.touchAnchorY = node.touchCenterY;
+                                node.touchAnchorCellX = null;
+                                node.touchAnchorCellY = null;
+                                return;
+                            }
+                            const inside = nearest.outsideDistance === 0;
+                            // 真正按在实体格内时保留格内相对位置；按在库存卡片空白处时，
+                            // 则吸到最近实体格中心，避免边缘点击产生夸张的视觉偏移。
+                            const ratioX = inside && nearest.rect.width ? Math.max(0, Math.min(1, (clientX - nearest.rect.left) / nearest.rect.width)) : 0.5;
+                            const ratioY = inside && nearest.rect.height ? Math.max(0, Math.min(1, (clientY - nearest.rect.top) / nearest.rect.height)) : 0.5;
+                            const cellSize = Number(node.dataset.size);
+                            const gap = Number(node.dataset.gap) || 2;
+                            node.touchAnchorX = nearest.x * (cellSize + gap) + ratioX * cellSize;
+                            node.touchAnchorY = nearest.y * (cellSize + gap) + ratioY * cellSize;
+                            node.touchAnchorCellX = nearest.x;
+                            node.touchAnchorCellY = nearest.y;
+                            node.touchAnchorRatioX = ratioX;
+                            node.touchAnchorRatioY = ratioY;
+                        };
                         function startDrag(e, piece, isTouch = false, sourceNode = e.currentTarget) {
                             if (isTouch && dialog.dragNode) return;
                             dialog.currentPieceData = piece;
                             refreshInventorySelect();
                             const drag = createDragPiece(piece, isTouch);
+                            if (isTouch) setTouchDragAnchor(drag, piece, sourceNode, e.clientX, e.clientY);
                             dialog.dragNode = drag;
                             const zoom = game.documentZoom || 1;
                             const rect = sourceNode.getBoundingClientRect();
@@ -41198,18 +41243,20 @@ const packs = function () {
                         function setTouchDragCenter(clientX, clientY) {
                             const node = dialog.dragNode;
                             if (!node) return;
-                            let translateX = clientX - node.touchCenterX;
-                            let translateY = clientY - node.touchCenterY;
+                            const anchorX = node.touchAnchorX ?? node.touchCenterX;
+                            const anchorY = node.touchAnchorY ?? node.touchCenterY;
+                            let translateX = clientX - anchorX;
+                            let translateY = clientY - anchorY;
                             node.style.transform = `translate3d(${translateX}px, ${translateY}px, 0)`;
                             // 某些手机 WebView 仍会给 html 根节点附加页面缩放或视口偏移。
                             // 根据实际渲染结果反向校正一次，而不是假定某个缩放值。
                             const rect = node.getBoundingClientRect();
                             const scaleX = rect.width && node.dragWidth ? rect.width / node.dragWidth : 1;
                             const scaleY = rect.height && node.dragHeight ? rect.height / node.dragHeight : 1;
-                            const renderedCenterX = rect.left + node.touchCenterX * scaleX;
-                            const renderedCenterY = rect.top + node.touchCenterY * scaleY;
-                            translateX += (clientX - renderedCenterX) / scaleX;
-                            translateY += (clientY - renderedCenterY) / scaleY;
+                            const renderedAnchorX = rect.left + anchorX * scaleX;
+                            const renderedAnchorY = rect.top + anchorY * scaleY;
+                            translateX += (clientX - renderedAnchorX) / scaleX;
+                            translateY += (clientY - renderedAnchorY) / scaleY;
                             node.style.transform = `translate3d(${translateX}px, ${translateY}px, 0)`;
                         };
                         function updateTouchDragPosition(piece, clientX, clientY) {
@@ -41236,13 +41283,22 @@ const packs = function () {
                                     for (let ox = 1 - shapeWidth; ox < 4; ox++) {
                                         if (!canPlace(info.state, piece.shape, ox, oy)) continue;
                                         let centerX = 0, centerY = 0, count = 0;
-                                        for (let py = 0; py < piece.shape.length; py++) {
-                                            for (let px = 0; px < piece.shape[py].length; px++) {
-                                                if (!piece.shape[py][px]) continue;
-                                                const cell = info.board[oy + py][ox + px].getBoundingClientRect();
-                                                centerX += (cell.left + cell.right) / 2;
-                                                centerY += (cell.top + cell.bottom) / 2;
-                                                count++;
+                                        const dragNode = dialog.dragNode;
+                                        if (dragNode.touchAnchorCellX != null && dragNode.touchAnchorCellY != null) {
+                                            const cell = info.board[oy + dragNode.touchAnchorCellY][ox + dragNode.touchAnchorCellX].getBoundingClientRect();
+                                            centerX = cell.left + cell.width * dragNode.touchAnchorRatioX;
+                                            centerY = cell.top + cell.height * dragNode.touchAnchorRatioY;
+                                            count = 1;
+                                        }
+                                        else {
+                                            for (let py = 0; py < piece.shape.length; py++) {
+                                                for (let px = 0; px < piece.shape[py].length; px++) {
+                                                    if (!piece.shape[py][px]) continue;
+                                                    const cell = info.board[oy + py][ox + px].getBoundingClientRect();
+                                                    centerX += (cell.left + cell.right) / 2;
+                                                    centerY += (cell.top + cell.bottom) / 2;
+                                                    count++;
+                                                }
                                             }
                                         }
                                         const dx = clientX - centerX / count;
