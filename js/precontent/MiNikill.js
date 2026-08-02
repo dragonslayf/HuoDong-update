@@ -40643,1113 +40643,183 @@ const packs = function () {
                 async content(event, trigger, player) {
                     player.addTempSkill(`${event.name}_used`);
                     await Promise.all(event.next);
-                    if (player.isUnderControl()) game.swapPlayerAuto(player);
-                    //AI直接走结果
-                    const switchToAuto = function () {
-                        return new Promise((resolve) => {
-                            game.resume();
-                            _status.imchoosing = false;
-                            event._result = { bool: false };
-                            resolve(event._result);
-                            const dialog = event.dialog;
-                            if (dialog) dialog[dialog.close ? 'close' : 'remove']();
-                            game.resume();
-                        });
-                    };
-                    //联机时间限制修改
-                    const originalTimeout = lib.configOL.choose_timeout;
-                    game.broadcastAll((player) => {
-                        if (_status.connectMode) lib.configOL.choose_timeout = '30';
-                        if (game.me !== player) {
-                            const dialog = _status.event.dialog = ui.create.dialog(`${get.translation(player)}正在进行“权衡”...`);
-                            dialog.open();
+                    // 自动选择最优配平结果，不再打开俄罗斯方块小游戏。
+                    const autoBalance = function (player) {
+                        const save = _status.mininianquanheng?.[player.playerid];
+                        if (!save || !Array.isArray(save.inventory) || !save.inventory.length) {
+                            return { bool: false };
                         }
-                    }, player);
-                    const 俄罗的俄罗斯方块 = function (player) {
-                        const event = _status.event, { promise, resolve } = Promise.withResolvers();
-                        //创建dialog
-                        const dialog = event.dialog = ui.create.div(".bolBalance.dialog", ui.window);
-                        Object.setPrototypeOf(dialog, lib.element.dialog);
-                        dialog.ontouchstart = ui.click.dragtouchdialog;
-                        dialog.leftState = Array.from({ length: 4 }, () => Array(4).fill(0));
-                        dialog.rightState = Array.from({ length: 4 }, () => Array(4).fill(0));
-                        dialog.inventoryData = [];
-                        dialog.history = [];
-                        dialog.currentPlace = [];
-                        dialog.currentCount = 0;
-                        dialog.style.position = "absolute";
-                        dialog.style.left = "50%";
-                        dialog.style.top = "50%";
-                        dialog.style.transform = "translate(-50%,-50%)";
-                        dialog.style.display = "flex";
-                        dialog.style.flexDirection = "column";
-                        dialog.style.alignItems = "center";
-                        dialog.style.gap = "12px";
-                        dialog.style.padding = "12px";
-                        dialog.style.background = "rgba(0,0,0,.75)";
-                        dialog.style.borderRadius = "10px";
-                        dialog.style.userSelect = "none";
-                        dialog.style.width = "fit-content";
-                        dialog.style.height = "fit-content";
-                        //dialog引用
-                        let save = _status.mininianquanheng[player.playerid];
-                        dialog.save = save;
-                        dialog.leftState = save.leftState;
-                        dialog.rightState = save.rightState;
-                        dialog.inventoryData = save.inventory;
-                        // 旧版本只保存了格子的占用状态，无法知道每个实体方块的边界。
-                        // 热更新后将旧占用格迁移成单格实体；新放置的方块会保存完整形状，
-                        // 从而在之后再次打开小游戏时也能整块拖动。
-                        if (!Array.isArray(save.placements)) {
-                            save.placements = [];
-                            [["left", save.leftState], ["right", save.rightState]].forEach(([side, state]) => {
-                                for (let y = 0; y < 4; y++) {
-                                    for (let x = 0; x < 4; x++) {
-                                        if (!state[y][x]) continue;
-                                        save.placements.push({
-                                            id: get.id(),
-                                            side,
-                                            x,
-                                            y,
-                                            piece: {
-                                                id: get.id(),
-                                                level: 1,
-                                                rotate: 0,
-                                                shape: [[1]],
-                                                count: 1,
-                                            },
-                                        });
-                                    }
-                                }
-                            });
-                        }
-                        dialog.placements = save.placements;
-                        dialog.initialLeftState = save.leftState.map(row => row.slice());
-                        dialog.initialRightState = save.rightState.map(row => row.slice());
-                        dialog.initialPlacements = save.placements.map(info => ({
-                            ...info,
-                            piece: {
-                                ...info.piece,
-                                shape: info.piece.shape.map(row => row.slice()),
-                            },
-                        }));
-                        dialog.currentPieceData = null;
-                        dialog.history = [];
-                        //dialog拖动
-                        dialog.dragNode = null;
-                        dialog.dragSide = null;
-                        dialog.dragX = 0;
-                        dialog.dragY = 0;
-                        dialog.dragBoard = null;
-                        dialog.dragState = null;
-                        //主体
-                        const main = ui.create.div(dialog);
-                        main.style.display = "flex";
-                        main.style.flexDirection = "row";
-                        main.style.alignItems = "center";
-                        main.style.justifyContent = "center";
-                        main.style.gap = "24px";
-                        main.style.position = "relative";
-                        dialog.main = main;
-                        const leftPanel = ui.create.div(main);
-                        leftPanel.style.gap = "10px";
-                        leftPanel.style.width = "280px";
-                        dialog.leftPanel = leftPanel;
-                        const controlPanel = ui.create.div(main);
-                        controlPanel.style.width = "180px";
-                        dialog.controlPanel = controlPanel;
-                        const rightPanel = ui.create.div(main);
-                        rightPanel.style.gap = "10px";
-                        rightPanel.style.width = "280px";
-                        dialog.rightPanel = rightPanel;
-                        [leftPanel, controlPanel, rightPanel].forEach(panel => {
-                            panel.style.display = "flex";
-                            panel.style.flexDirection = "column";
-                            panel.style.alignItems = "center";
-                            panel.style.position = "relative";
-                        });
-                        //棋盘区
-                        function getPlacementAt(side, x, y) {
-                            return dialog.placements.find(info => {
-                                if (info.side !== side) return false;
-                                const shape = info.piece.shape;
-                                const px = x - info.x;
-                                const py = y - info.y;
-                                return py >= 0 && py < shape.length && px >= 0 && px < shape[py].length && !!shape[py][px];
-                            });
-                        };
-                        function createBoard(parent, side) {
-                            const boardNode = ui.create.div(parent);
-                            boardNode.style.display = "flex";
-                            boardNode.style.flexDirection = "column";
-                            boardNode.style.gap = "4px";
-                            boardNode.style.padding = "8px";
-                            boardNode.style.background = "#999";
-                            boardNode.style.borderRadius = "8px";
-                            boardNode.style.position = "relative";
-                            const board = [];
-                            for (let y = 0; y < 4; y++) {
-                                const row = ui.create.div(boardNode);
-                                row.style.display = "flex";
-                                row.style.gap = "4px";
-                                row.style.position = "relative";
-                                board[y] = [];
-                                for (let x = 0; x < 4; x++) {
-                                    const cell = ui.create.div(row);
-                                    cell.dataset.x = x;
-                                    cell.dataset.y = y;
-                                    cell.dataset.side = side;
-                                    cell.style.width = "48px";
-                                    cell.style.height = "48px";
-                                    cell.style.background = "white";
-                                    cell.style.borderRadius = "4px";
-                                    cell.style.boxSizing = "border-box";
-                                    cell.style.position = "relative";
-                                    if (lib.config.touchscreen) {
-                                        cell.ontouchstart = function (e) {
-                                            const placement = getPlacementAt(side, x, y);
-                                            if (!placement) return;
-                                            const touch = e.changedTouches[0] || e.touches[0];
-                                            if (!touch) return;
-                                            e.stopPropagation();
-                                            e.preventDefault();
-                                            startPlacedTouchDrag(touch, placement, cell);
-                                        };
-                                    }
-                                    board[y][x] = cell;
-                                }
-                            }
-                            board.node = boardNode;
-                            board.side = side;
-                            board.cellSize = 48;
-                            board.gap = 4;
-                            return board;
-                        };
-                        function renderBoard(board, state) {
-                            for (let y = 0; y < 4; y++) {
-                                for (let x = 0; x < 4; x++) {
-                                    const cell = board[y][x];
-                                    const placement = getPlacementAt(board.side, x, y);
-                                    if (state[y][x]) {
-                                        cell.style.background = "#4dabff";
-                                    }
-                                    else {
-                                        cell.style.background = "white";
-                                    }
-                                    cell.style.boxShadow = "";
-                                    cell.style.zIndex = "";
-                                    cell.style.cursor = placement ? "grab" : "";
-                                    cell.style.touchAction = placement ? "none" : "";
+                        const normalizeBoard = state => Array.from({ length: 4 }, (_, y) =>
+                            Array.from({ length: 4 }, (_, x) => state?.[y]?.[x] ? 1 : 0)
+                        );
+                        const countBoard = state => state.reduce((sum, row) =>
+                            sum + row.reduce((rowSum, value) => rowSum + (value ? 1 : 0), 0), 0
+                        );
+                        const fillBoard = (state, count) => {
+                            for (let y = 0; y < 4 && count > 0; y++) {
+                                for (let x = 0; x < 4 && count > 0; x++) {
+                                    if (state[y][x]) continue;
+                                    state[y][x] = 1;
+                                    count--;
                                 }
                             }
                         };
-                        function renderPiece(piece, parent) {
-                            parent.innerHTML = "";
-                            if (!piece) return;
-                            const box = ui.create.div(parent);
-                            box.style.pointerEvents = "none";
-                            box.style.position = "relative";
-                            box.style.display = "flex";
-                            box.style.flexDirection = "column";
-                            const gap = Number(parent.dataset.gap || 2);
-                            box.style.gap = gap + "px";
-                            box.style.width = "fit-content";
-                            const shape = piece.shape;
-                            for (let y = 0; y < shape.length; y++) {
-                                const row = ui.create.div(box);
-                                row.style.position = "relative";
-                                row.style.display = "flex";
-                                row.style.gap = gap + "px";
-                                for (let x = 0; x < shape[y].length; x++) {
-                                    const cell = ui.create.div(row);
-                                    cell.style.position = "relative";
-                                    const size = Number(parent.dataset.size || 24);
-                                    cell.style.width = size + "px";
-                                    cell.style.height = size + "px";
-                                    cell.style.borderRadius = "4px";
-                                    cell.style.boxSizing = "border-box";
-                                    if (shape[y][x]) {
-                                        cell.style.background = "#4dabff";
-                                    }
-                                    else {
-                                        cell.style.visibility = "hidden";
-                                    }
-                                }
-                            }
-                        };
-                        function refreshInventorySelect() {
-                            dialog.inventoryData.forEach(piece => {
-                                if (!piece.node) return;
-                                if (piece === dialog.currentPieceData) {
-                                    piece.node.style.outline = "3px solid #ffd700";
-                                    piece.node.style.outlineOffset = "2px";
-                                }
-                                else {
-                                    piece.node.style.outline = "";
-                                    piece.node.style.outlineOffset = "";
-                                }
-                            });
-                            if (dialog.currentPieceData) {
-                                renderPiece(dialog.currentPieceData, dialog.currentPiece);
-                                if (dialog.downButton) {
-                                    const enable = dialog.currentPieceData && dialog.currentPieceData.level > 1;
-                                    dialog.downButton.classList.toggle("disabled", !enable);
-                                    dialog.downButton.style.opacity = enable ? "1" : "0.4";
-                                }
-                            }
-                            else {
-                                dialog.currentPiece.innerHTML = "";
-                            }
-                        };
-                        function renderInventory() {
-                            dialog.inventory.innerHTML = "";
-                            dialog.inventoryData.forEach(piece => {
-                                const item = ui.create.div(dialog.inventory);
-                                item.style.position = "relative";
-                                item.style.width = "72px";
-                                item.style.height = "72px";
-                                item.style.display = "flex";
-                                item.style.justifyContent = "center";
-                                item.style.alignItems = "center";
-                                item.style.borderRadius = "8px";
-                                item.style.background = "rgba(255,255,255,.12)";
-                                item.style.cursor = "pointer";
-                                piece.node = item;
-                                item.piece = piece;
-                                item.dataset.size = 16;
-                                renderPiece(piece, item);
-                                if (lib.config.touchscreen) {
-                                    item.ontouchstart = function (e) {
-                                        e.stopPropagation();
-                                        e.preventDefault();
-                                        const evt = e.changedTouches[0] || e.touches[0];
-                                        if (!evt) return;
-                                        startDrag(evt, piece, true, item);
-                                    };
-                                }
-                                else {
-                                    item.onmousedown = function (e) {
-                                        e.stopPropagation();
-                                        startDrag(e, piece);
-                                    };
-                                }
-                                const num = ui.create.div(item);
-                                num.innerHTML = "×" + piece.count;
-                                num.style.position = "absolute";
-                                num.style.right = "4px";
-                                num.style.bottom = "2px";
-                                num.style.color = "white";
-                                num.style.fontSize = "16px";
-                                num.style.fontWeight = "bold";
-                                num.style.pointerEvents = "none";
-                                num.style.textShadow = "0 0 2px black";
-                            });
-                            if (!dialog.currentPieceData && dialog.inventoryData.length) {
-                                dialog.currentPieceData = dialog.inventoryData[0];
-                            }
-                            refreshInventorySelect();
-                        };
-                        function createDragPiece(piece, isTouch = false) {
-                            const node = document.createElement("div");
-                            node.style.position = "fixed";
-                            node.style.pointerEvents = "none";
-                            node.style.zIndex = "99999";
-                            node.style.opacity = "0.7";
-                            node.style.transition = "none";
-                            node.style.animation = "none";
-                            if (isTouch) {
-                                // 手机端预览属于小游戏窗口，窗口移动时方块会随窗口一起移动；
-                                // 使用和棋盘格相同的布局尺寸，二者会一起受到小游戏窗口缩放，
-                                // 避免预览块比实际空位偏小。
-                                node.style.position = "absolute";
-                                const board = dialog.leftBoard || dialog.rightBoard;
-                                const firstCell = board?.[0]?.[0];
-                                const secondCell = board?.[0]?.[1];
-                                const cellSize = firstCell?.offsetWidth || board?.cellSize || 48;
-                                const cellGap = secondCell ? Math.max(0, secondCell.offsetLeft - firstCell.offsetLeft - cellSize) : (board?.gap || 4);
-                                node.dataset.size = cellSize;
-                                node.dataset.gap = cellGap;
-                                node.style.left = "0";
-                                node.style.top = "0";
-                                node.style.display = "block";
-                                node.style.margin = "0";
-                                node.style.padding = "0";
-                                node.style.transformOrigin = "0 0";
-                                node.style.contain = "layout style paint";
-                            }
-                            else {
-                                node.dataset.size = 48;
-                                node.dataset.gap = 4;
-                            }
-                            renderPiece(piece, node);
-                            (isTouch ? dialog : document.body).appendChild(node);
-                            const shape = piece.shape;
-                            const cellSize = Number(node.dataset.size);
-                            const gap = Number(node.dataset.gap) || 2;
-                            const cols = isTouch ? Math.max(...shape.map(row => row.length)) : shape[0].length;
-                            const rows = shape.length;
-                            node.dragWidth = cols * cellSize + (cols - 1) * gap;
-                            node.dragHeight = rows * cellSize + (rows - 1) * gap;
-                            if (isTouch) {
-                                node.style.width = node.dragWidth + "px";
-                                node.style.height = node.dragHeight + "px";
-                                let centerX = 0, centerY = 0, count = 0;
-                                for (let y = 0; y < shape.length; y++) {
-                                    for (let x = 0; x < shape[y].length; x++) {
-                                        if (!shape[y][x]) continue;
-                                        centerX += x * (cellSize + gap) + cellSize / 2;
-                                        centerY += y * (cellSize + gap) + cellSize / 2;
-                                        count++;
-                                    }
-                                }
-                                // 以所有实体格的重心作为触点锚点；异形方块不会再因为透明格
-                                // 让手指落在可见方块的右下方。
-                                node.touchCenterX = count ? centerX / count : node.dragWidth / 2;
-                                node.touchCenterY = count ? centerY / count : node.dragHeight / 2;
-                            }
-                            return node;
-                        };
-                        function setTouchDragAnchor(node, piece, sourceNode, clientX, clientY) {
-                            // 触屏拖拽应保留用户在库存方块上的实际按压点，而不是把所有
-                            // 异形块都强行按实体格重心对齐。否则按在右下方实体格时，整块
-                            // 会在抬起的一瞬间跳到手指左上方。
-                            let nearest = null;
-                            const box = sourceNode?.firstElementChild;
-                            for (let y = 0; y < piece.shape.length; y++) {
-                                for (let x = 0; x < piece.shape[y].length; x++) {
-                                    if (!piece.shape[y][x]) continue;
-                                    const cell = box?.children?.[y]?.children?.[x];
-                                    if (!cell) continue;
-                                    const rect = cell.getBoundingClientRect();
-                                    const outsideX = clientX < rect.left ? rect.left - clientX : clientX > rect.right ? clientX - rect.right : 0;
-                                    const outsideY = clientY < rect.top ? rect.top - clientY : clientY > rect.bottom ? clientY - rect.bottom : 0;
-                                    const centerX = (rect.left + rect.right) / 2;
-                                    const centerY = (rect.top + rect.bottom) / 2;
-                                    const outsideDistance = outsideX * outsideX + outsideY * outsideY;
-                                    const centerDistance = (clientX - centerX) ** 2 + (clientY - centerY) ** 2;
-                                    if (!nearest || outsideDistance < nearest.outsideDistance || (outsideDistance === nearest.outsideDistance && centerDistance < nearest.centerDistance)) {
-                                        nearest = { x, y, rect, outsideDistance, centerDistance };
-                                    }
-                                }
-                            }
-                            if (!nearest) {
-                                node.touchAnchorX = node.touchCenterX;
-                                node.touchAnchorY = node.touchCenterY;
-                                node.touchAnchorCellX = null;
-                                node.touchAnchorCellY = null;
-                                return;
-                            }
-                            const inside = nearest.outsideDistance === 0;
-                            // 真正按在实体格内时保留格内相对位置；按在库存卡片空白处时，
-                            // 则吸到最近实体格中心，避免边缘点击产生夸张的视觉偏移。
-                            const ratioX = inside && nearest.rect.width ? Math.max(0, Math.min(1, (clientX - nearest.rect.left) / nearest.rect.width)) : 0.5;
-                            const ratioY = inside && nearest.rect.height ? Math.max(0, Math.min(1, (clientY - nearest.rect.top) / nearest.rect.height)) : 0.5;
-                            const cellSize = Number(node.dataset.size);
-                            const gap = Number(node.dataset.gap) || 2;
-                            node.touchAnchorX = nearest.x * (cellSize + gap) + ratioX * cellSize;
-                            node.touchAnchorY = nearest.y * (cellSize + gap) + ratioY * cellSize;
-                            node.touchAnchorCellX = nearest.x;
-                            node.touchAnchorCellY = nearest.y;
-                            node.touchAnchorRatioX = ratioX;
-                            node.touchAnchorRatioY = ratioY;
-                        };
-                        function setPlacedTouchDragAnchor(node, placement, sourceCell, clientX, clientY) {
-                            const rect = sourceCell.getBoundingClientRect();
-                            const shapeX = Number(sourceCell.dataset.x) - placement.x;
-                            const shapeY = Number(sourceCell.dataset.y) - placement.y;
-                            const ratioX = rect.width ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0.5;
-                            const ratioY = rect.height ? Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)) : 0.5;
-                            const cellSize = Number(node.dataset.size);
-                            const gap = Number(node.dataset.gap) || 2;
-                            node.touchAnchorX = shapeX * (cellSize + gap) + ratioX * cellSize;
-                            node.touchAnchorY = shapeY * (cellSize + gap) + ratioY * cellSize;
-                            node.touchAnchorCellX = shapeX;
-                            node.touchAnchorCellY = shapeY;
-                            node.touchAnchorRatioX = ratioX;
-                            node.touchAnchorRatioY = ratioY;
-                        };
-                        function startPlacedTouchDrag(e, placement, sourceCell) {
-                            if (dialog.dragNode) return;
-                            const sourceState = placement.side === "left" ? dialog.leftState : dialog.rightState;
-                            const sourceBoard = placement.side === "left" ? dialog.leftBoard : dialog.rightBoard;
-                            const source = {
-                                side: placement.side,
-                                x: placement.x,
-                                y: placement.y,
-                                state: sourceState,
-                                board: sourceBoard,
-                            };
-                            // 拖起后先释放原占用，方块才能放回原处或与原位置部分重叠。
-                            removePiece(sourceState, placement.piece.shape, placement.x, placement.y);
-                            renderBoard(sourceBoard, sourceState);
-                            startDrag(e, placement.piece, true, sourceCell, placement, source);
-                        };
-                        function startDrag(e, piece, isTouch = false, sourceNode = e.currentTarget, placement = null, placementSource = null) {
-                            if (isTouch && dialog.dragNode) return;
-                            if (!placement) {
-                                dialog.currentPieceData = piece;
-                                refreshInventorySelect();
-                            }
-                            const drag = createDragPiece(piece, isTouch);
-                            if (isTouch) {
-                                if (placement) setPlacedTouchDragAnchor(drag, placement, sourceNode, e.clientX, e.clientY);
-                                else setTouchDragAnchor(drag, piece, sourceNode, e.clientX, e.clientY);
-                            }
-                            dialog.dragNode = drag;
-                            dialog.dragPlacement = placement;
-                            dialog.dragPlacementSource = placementSource;
-                            const zoom = game.documentZoom || 1;
-                            const rect = sourceNode.getBoundingClientRect();
-                            const offsetX = (e.clientX - rect.left) / zoom;
-                            const offsetY = (e.clientY - rect.top) / zoom;
-                            const touchIdentifier = isTouch ? e.identifier : null;
-                            let lastTouch = isTouch ? { clientX: e.clientX, clientY: e.clientY } : null;
-                            let animationFrameId = null;
-                            function move(ev) {
-                                if (animationFrameId) cancelAnimationFrame(animationFrameId);
-                                animationFrameId = requestAnimationFrame(() => {
-                                    drag.style.left = (ev.clientX / zoom - offsetX) + "px";
-                                    drag.style.top = (ev.clientY / zoom - offsetY) + "px";
-                                    updateDragPosition(piece);
-                                });
-                            };
-                            function getTouch(list) {
-                                if (!list) return null;
-                                for (const touch of list) {
-                                    if (touch.identifier === touchIdentifier) return touch;
-                                }
-                                return null;
-                            };
-                            function moveTouchPoint(point, immediately = false) {
-                                if (!point) return;
-                                lastTouch = { clientX: point.clientX, clientY: point.clientY };
-                                const update = () => {
-                                    animationFrameId = null;
-                                    updateTouchDragPosition(piece, lastTouch.clientX, lastTouch.clientY);
-                                };
-                                if (animationFrameId) cancelAnimationFrame(animationFrameId);
-                                if (immediately) update();
-                                else animationFrameId = requestAnimationFrame(update);
-                            };
-                            function touchMove(e) {
-                                const touch = getTouch(e.touches);
-                                if (!touch) return;
-                                moveTouchPoint(touch);
-                                e.preventDefault();
-                            };
-                            function clearListeners() {
-                                if (isTouch) {
-                                    document.removeEventListener("touchmove", touchMove);
-                                    document.removeEventListener("touchend", touchEnd);
-                                    document.removeEventListener("touchcancel", touchCancel);
-                                }
-                                else {
-                                    document.removeEventListener("mousemove", move);
-                                    document.removeEventListener("mouseup", end);
-                                }
-                            };
-                            function end(cancelled = false) {
-                                if (animationFrameId) {
-                                    cancelAnimationFrame(animationFrameId);
-                                    animationFrameId = null;
-                                }
-                                clearListeners();
-                                const canDrop = cancelled !== true && dialog.dragBoard && dialog.dragState && dialog.dragX != null && dialog.dragY != null;
-                                if (canDrop) {
-                                    placePiece(dialog.dragState, piece.shape, dialog.dragX, dialog.dragY);
-                                    if (placement) {
-                                        placement.side = dialog.dragSide;
-                                        placement.x = dialog.dragX;
-                                        placement.y = dialog.dragY;
-                                    }
-                                    else if (isTouch) {
-                                        const placedInfo = {
-                                            id: get.id(),
-                                            side: dialog.dragSide,
-                                            piece: {
-                                                ...piece,
-                                                shape: piece.shape.map(row => row.slice()),
-                                                count: 1,
-                                            },
-                                            x: dialog.dragX,
-                                            y: dialog.dragY,
-                                        };
-                                        dialog.placements.push(placedInfo);
-                                        dialog.currentPlace.push(placedInfo);
-                                        dialog.currentCount++;
-                                        removeInventory(piece);
-                                        renderInventory();
-                                    }
-                                    else {
-                                        dialog.currentPlace.push({
-                                            side: dialog.dragSide,
-                                            piece,
-                                            x: dialog.dragX,
-                                            y: dialog.dragY,
-                                        });
-                                        dialog.currentCount++;
-                                        removeInventory(piece);
-                                        renderInventory();
-                                    }
-                                }
-                                else if (placement && placementSource) {
-                                    placePiece(placementSource.state, piece.shape, placementSource.x, placementSource.y);
-                                }
-                                if (isTouch) {
-                                    renderBoard(dialog.leftBoard, dialog.leftState);
-                                    renderBoard(dialog.rightBoard, dialog.rightState);
-                                }
-                                else if (canDrop) {
-                                    renderBoard(dialog.dragBoard, dialog.dragState);
-                                }
-                                if (canDrop || placement) {
-                                    refreshWeight();
-                                }
-                                if (dialog.dragNode) {
-                                    dialog.dragNode.remove();
-                                    dialog.dragNode = null;
-                                }
-                                dialog.dragSide = null;
-                                dialog.dragBoard = null;
-                                dialog.dragState = null;
-                                dialog.dragX = null;
-                                dialog.dragY = null;
-                                dialog.dragPlacement = null;
-                                dialog.dragPlacementSource = null;
-                            };
-                            function touchEnd(e) {
-                                const touch = getTouch(e.changedTouches);
-                                // 其他手指松开时不结束当前方块的拖拽
-                                if (!touch && e.changedTouches?.length) return;
-                                if (touch) moveTouchPoint(touch, true);
-                                else if (lastTouch) updateTouchDragPosition(piece, lastTouch.clientX, lastTouch.clientY);
-                                e.preventDefault();
-                                end(false);
-                            };
-                            function touchCancel(e) {
-                                const touch = getTouch(e.changedTouches);
-                                if (!touch && e.changedTouches?.length) return;
-                                e.preventDefault();
-                                end(true);
-                            };
-                            if (isTouch) {
-                                // 触屏端以手指为方块中心，不再沿用库存缩略图的点击偏移
-                                moveTouchPoint(e, true);
-                                document.addEventListener("touchmove", touchMove, { passive: false });
-                                document.addEventListener("touchend", touchEnd, { passive: false });
-                                document.addEventListener("touchcancel", touchCancel, { passive: false });
-                            }
-                            else {
-                                move(e);
-                                document.addEventListener("mousemove", move);
-                                document.addEventListener("mouseup", end);
-                            }
-                        };
-                        function canPlace(state, shape, ox, oy) {
-                            for (let y = 0; y < shape.length; y++) {
-                                for (let x = 0; x < shape[y].length; x++) {
-                                    if (!shape[y][x]) continue;
-                                    let xx = ox + x;
-                                    let yy = oy + y;
-                                    if (xx < 0 || yy < 0 || xx >= 4 || yy >= 4) return false;
-                                    if (state[yy][xx]) return false;
-                                }
-                            }
-                            return true;
-                        };
-                        function placePiece(state, shape, ox, oy) {
-                            for (let y = 0; y < shape.length; y++) {
-                                for (let x = 0; x < shape[y].length; x++) {
-                                    if (shape[y][x]) {
-                                        state[oy + y][ox + x] = 1;
-                                    }
-                                }
-                            }
-                        };
-                        function removePiece(state, shape, ox, oy) {
-                            for (let y = 0; y < shape.length; y++) {
-                                for (let x = 0; x < shape[y].length; x++) {
-                                    if (shape[y][x]) {
-                                        state[oy + y][ox + x] = 0;
-                                    }
-                                }
-                            }
-                        };
-                        function countWeight(state) {
-                            let weight = 0;
-                            for (let y = 0; y < 4; y++) {
-                                for (let x = 0; x < 4; x++) {
-                                    if (state[y][x]) weight++;
-                                }
-                            }
-                            return weight;
-                        };
-                        function refreshWeight() {
-                            const left = countWeight(dialog.leftState);
-                            const right = countWeight(dialog.rightState);
-                            dialog.leftWeight.innerHTML = "重量：" + left;
-                            dialog.rightWeight.innerHTML = "重量：" + right;
-                            if (left > 0 && left === right) {
-                                dialog.leftWeight.style.color = "#32CD32";
-                                dialog.rightWeight.style.color = "#32CD32";
-                            } else {
-                                dialog.leftWeight.style.color = "#ff6868";
-                                dialog.rightWeight.style.color = "#ff6868";
-                            }
-                            const enable = dialog.currentPlace.length && left == right && left > 0;
-                            dialog.finishButton.classList.toggle("disabled", !enable);
-                            dialog.finishButton.style.opacity = enable ? "1" : "0.4";
-                        };
-                        function updateDragPosition(piece) {
-                            dialog.dragSide = null;
-                            dialog.dragBoard = null;
-                            dialog.dragState = null;
-                            dialog.dragX = null;
-                            dialog.dragY = null;
-                            if (!dialog.dragNode) return;
-                            const zoom = game.documentZoom || 1;
-                            const rect = dialog.dragNode.getBoundingClientRect();
-                            const cellSize = Number(dialog.dragNode.dataset.size);
-                            const gap = Number(dialog.dragNode.dataset.gap || 2);
-                            const voteMap = {};
-                            for (let py = 0; py < piece.shape.length; py++) {
-                                for (let px = 0; px < piece.shape[py].length; px++) {
-                                    if (!piece.shape[py][px]) continue;
-                                    const cx = rect.left + px * (cellSize + gap) + cellSize / 2;
-                                    const cy = rect.top + py * (cellSize + gap) + cellSize / 2;
-                                    const dom = document.elementFromPoint(cx, cy);
-                                    if (!dom?.dataset.side) continue;
-                                    const bx = Number(dom.dataset.x);
-                                    const by = Number(dom.dataset.y);
-                                    const ox = bx - px;
-                                    const oy = by - py;
-                                    const key = dom.dataset.side + "_" + ox + "_" + oy;
-                                    if (!voteMap[key]) {
-                                        voteMap[key] = {
-                                            side: dom.dataset.side,
-                                            x: ox,
-                                            y: oy,
-                                            count: 0,
-                                        };
-                                    }
-                                    voteMap[key].count++;
-                                }
-                            }
-                            let best = null;
-                            Object.values(voteMap).forEach(info => {
-                                const state = info.side == "left" ? dialog.leftState : dialog.rightState;
-                                if (!canPlace(state, piece.shape, info.x, info.y)) return;
-                                if (!best || info.count > best.count) {
-                                    best = info;
-                                }
-                            });
-                            if (!best) return;
-                            dialog.dragSide = best.side;
-                            dialog.dragBoard = best.side == "left" ? dialog.leftBoard : dialog.rightBoard;
-                            dialog.dragState = best.side == "left" ? dialog.leftState : dialog.rightState;
-                            dialog.dragX = best.x;
-                            dialog.dragY = best.y;
-                        };
-                        function getDialogLocalPoint(clientX, clientY) {
-                            const rect = dialog.getBoundingClientRect();
-                            const layoutWidth = dialog.offsetWidth || rect.width || 1;
-                            const layoutHeight = dialog.offsetHeight || rect.height || 1;
-                            return {
-                                x: (clientX - rect.left) * layoutWidth / (rect.width || layoutWidth),
-                                y: (clientY - rect.top) * layoutHeight / (rect.height || layoutHeight),
-                            };
-                        };
-                        function setTouchDragPosition(clientX, clientY) {
-                            const node = dialog.dragNode;
-                            if (!node) return;
-                            const anchorX = node.touchAnchorX ?? node.touchCenterX;
-                            const anchorY = node.touchAnchorY ?? node.touchCenterY;
-                            const dialogRect = dialog.getBoundingClientRect();
-                            // 此前多版理论坐标换算仍会使实体固定偏向左上。按实际测试要求，
-                            // 将显示锚点直接向右、向下各补偿小游戏浮动窗口显示尺寸的 1/4。
-                            const targetClientX = clientX + dialogRect.width / 4;
-                            const targetClientY = clientY + dialogRect.height / 4;
-                            const point = getDialogLocalPoint(targetClientX, targetClientY);
-                            let localX = point.x - anchorX;
-                            let localY = point.y - anchorY;
-                            node.style.transform = `translate3d(${localX}px, ${localY}px, 0)`;
+                        const leftState = normalizeBoard(save.leftState);
+                        const rightState = normalizeBoard(save.rightState);
+                        const leftCount = countBoard(leftState);
+                        const rightCount = countBoard(rightState);
+                        const leftCapacity = 16 - leftCount;
+                        const rightCapacity = 16 - rightCount;
+                        const maxUsefulPieces = leftCapacity + rightCapacity;
+                        if (maxUsefulPieces <= 0) return { bool: false };
 
-                            // 理论比例换算在部分手机 WebView 中仍会受到页面 zoom、body transform
-                            // 及窗口自身 translate 的共同影响。用浏览器真实渲染结果再校准一次，
-                            // 保证被按住的实体格位置与触点严格重合，而不是固定偏在左上方。
-                            const nodeRect = node.getBoundingClientRect();
-                            const nodeWidth = node.offsetWidth || node.dragWidth || 1;
-                            const nodeHeight = node.offsetHeight || node.dragHeight || 1;
-                            const renderedAnchorX = nodeRect.left + anchorX * nodeRect.width / nodeWidth;
-                            const renderedAnchorY = nodeRect.top + anchorY * nodeRect.height / nodeHeight;
-                            const dialogWidth = dialog.offsetWidth || dialogRect.width || 1;
-                            const dialogHeight = dialog.offsetHeight || dialogRect.height || 1;
-                            const scaleX = dialogRect.width / dialogWidth || 1;
-                            const scaleY = dialogRect.height / dialogHeight || 1;
-                            localX += (targetClientX - renderedAnchorX) / scaleX;
-                            localY += (targetClientY - renderedAnchorY) / scaleY;
-                            node.style.transform = `translate3d(${localX}px, ${localY}px, 0)`;
-                        };
-                        function clearTouchMatchHighlight() {
-                            if (!dialog.touchMatchCells?.length) return;
-                            for (const cell of dialog.touchMatchCells) {
-                                const side = cell.dataset.side;
-                                const x = Number(cell.dataset.x);
-                                const y = Number(cell.dataset.y);
-                                const state = side === "left" ? dialog.leftState : dialog.rightState;
-                                cell.style.background = state[y][x] ? "#4dabff" : "white";
-                                cell.style.boxShadow = "";
-                                cell.style.zIndex = "";
+                        // 每个积木至多使用一次；原小游戏允许逐级降级，因此等级为 level
+                        // 的积木可以贡献 1...level 个单位格。每组保留至多 32 份即可，
+                        // 因为两个 4×4 天平最多只可能再放入 32 件积木。
+                        const pieces = [];
+                        save.inventory.forEach((item, inventoryIndex) => {
+                            const level = Math.max(1, Math.min(4, Number(item.level) || 1));
+                            const count = Math.max(0, Math.floor(Number(item.count) || 0));
+                            for (let i = 0; i < Math.min(count, maxUsefulPieces); i++) {
+                                pieces.push({ inventoryIndex, level });
                             }
-                            dialog.touchMatchCells = [];
-                        };
-                        function showTouchMatchHighlight(board, piece, ox, oy) {
-                            clearTouchMatchHighlight();
-                            dialog.touchMatchCells = [];
-                            for (let y = 0; y < piece.shape.length; y++) {
-                                for (let x = 0; x < piece.shape[y].length; x++) {
-                                    if (!piece.shape[y][x]) continue;
-                                    const cell = board[oy + y]?.[ox + x];
-                                    if (!cell) continue;
-                                    cell.style.background = "#ffd700";
-                                    cell.style.boxShadow = "inset 0 0 0 3px #fff2a8, 0 0 9px #ffd700";
-                                    cell.style.zIndex = "1";
-                                    dialog.touchMatchCells.push(cell);
-                                }
-                            }
-                        };
-                        function getTouchBoardCell(clientX, clientY) {
-                            let node = document.elementFromPoint(clientX, clientY);
-                            while (node && node !== dialog) {
-                                if (node.dataset?.side && node.dataset.x != null && node.dataset.y != null) return node;
-                                node = node.parentElement;
-                            }
-                            return null;
-                        };
-                        function getTouchPieceMatch(piece) {
-                            const drag = dialog.dragNode;
-                            const box = drag?.firstElementChild;
-                            if (!box) return null;
-                            let match = null;
-                            const cells = [];
-                            const cellKeys = new Set();
-                            for (let y = 0; y < piece.shape.length; y++) {
-                                for (let x = 0; x < piece.shape[y].length; x++) {
-                                    if (!piece.shape[y][x]) continue;
-                                    const dragCell = box.children?.[y]?.children?.[x];
-                                    if (!dragCell) return null;
-                                    const rect = dragCell.getBoundingClientRect();
-                                    const cell = getTouchBoardCell((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
-                                    if (!cell) return null;
-                                    const side = cell.dataset.side;
-                                    const boardX = Number(cell.dataset.x);
-                                    const boardY = Number(cell.dataset.y);
-                                    const originX = boardX - x;
-                                    const originY = boardY - y;
-                                    if (!match) {
-                                        match = { side, x: originX, y: originY };
-                                    }
-                                    else if (match.side !== side || match.x !== originX || match.y !== originY) {
-                                        return null;
-                                    }
-                                    const key = `${side}_${boardX}_${boardY}`;
-                                    if (cellKeys.has(key)) return null;
-                                    cellKeys.add(key);
-                                    cells.push(cell);
-                                }
-                            }
-                            if (!match || !cells.length) return null;
-                            const board = match.side === "left" ? dialog.leftBoard : dialog.rightBoard;
-                            const state = match.side === "left" ? dialog.leftState : dialog.rightState;
-                            if (!canPlace(state, piece.shape, match.x, match.y)) return null;
-                            return { ...match, board, state, cells };
-                        };
-                        function updateTouchDragPosition(piece, clientX, clientY) {
-                            dialog.dragSide = null;
-                            dialog.dragBoard = null;
-                            dialog.dragState = null;
-                            dialog.dragX = null;
-                            dialog.dragY = null;
-                            if (!dialog.dragNode) return;
-                            clearTouchMatchHighlight();
-                            dialog.dragNode.style.visibility = "visible";
-                            setTouchDragPosition(clientX, clientY);
-                            dialog.dragNode.style.opacity = "0.7";
-                            dialog.dragNode.style.filter = "";
-                            // 自动匹配只检查实体当前实际覆盖的空位，不修改实体位置、不搜索
-                            // 附近格子，也不隐藏预览，因此没有任何吸附或跳格效果。
-                            const match = getTouchPieceMatch(piece);
-                            if (!match) return;
-                            dialog.dragSide = match.side;
-                            dialog.dragBoard = match.board;
-                            dialog.dragState = match.state;
-                            dialog.dragX = match.x;
-                            dialog.dragY = match.y;
-                            showTouchMatchHighlight(match.board, piece, match.x, match.y);
-                        };
-                        dialog.leftBoard = createBoard(leftPanel, "left");
-                        dialog.rightBoard = createBoard(rightPanel, "right");
-                        renderBoard(dialog.leftBoard, dialog.leftState);
-                        renderBoard(dialog.rightBoard, dialog.rightState);
-                        const leftWeight = ui.create.div(leftPanel);
-                        leftWeight.innerHTML = "重量：0";
-                        leftWeight.style.position = "relative";
-                        leftWeight.style.marginTop = "10px";
-                        leftWeight.style.fontSize = "20px";
-                        leftWeight.style.fontWeight = "bold";
-                        leftWeight.style.color = "#ff6868";
-                        leftWeight.style.textAlign = "center";
-                        dialog.leftWeight = leftWeight;
-                        const rightWeight = ui.create.div(rightPanel);
-                        rightWeight.innerHTML = "重量：0";
-                        rightWeight.style.position = "relative";
-                        rightWeight.style.marginTop = "10px";
-                        rightWeight.style.fontSize = "20px";
-                        rightWeight.style.fontWeight = "bold";
-                        rightWeight.style.color = "#ff6868";
-                        rightWeight.style.textAlign = "center";
-                        dialog.rightWeight = rightWeight;
-                        //中心区
-                        controlPanel.style.position = "relative";
-                        controlPanel.style.display = "flex";
-                        controlPanel.style.flexDirection = "column";
-                        controlPanel.style.alignItems = "center";
-                        controlPanel.style.justifyContent = "flex-start";
-                        controlPanel.style.height = "320px";
-                        const currentTitle = ui.create.div(controlPanel);
-                        currentTitle.innerHTML = "权衡";
-                        currentTitle.style.position = "relative";
-                        currentTitle.style.color = "white";
-                        currentTitle.style.fontSize = "22px";
-                        currentTitle.style.fontWeight = "bold";
-                        currentTitle.style.lineHeight = "1";
-                        currentTitle.style.marginBottom = "12px";
-                        const currentPiece = ui.create.div(controlPanel);
-                        currentPiece.style.position = "relative";
-                        currentPiece.style.display = "flex";
-                        currentPiece.style.justifyContent = "center";
-                        currentPiece.style.alignItems = "center";
-                        currentPiece.style.width = "150px";
-                        currentPiece.style.height = "150px";
-                        currentPiece.style.background = "rgba(255,255,255,.12)";
-                        currentPiece.style.borderRadius = "10px";
-                        currentPiece.style.marginBottom = "16px";
-                        dialog.currentPiece = currentPiece;
-                        const buttonPanel = ui.create.div(controlPanel);
-                        buttonPanel.style.position = "relative";
-                        buttonPanel.style.display = "flex";
-                        buttonPanel.style.flexDirection = "column";
-                        buttonPanel.style.alignItems = "center";
-                        buttonPanel.style.gap = "8px";
-                        buttonPanel.style.width = "100%";
-                        const row1 = ui.create.div(buttonPanel);
-                        row1.style.position = "relative";
-                        row1.style.display = "flex";
-                        row1.style.justifyContent = "center";
-                        row1.style.gap = "8px";
-                        row1.style.width = "100%";
-                        const row2 = ui.create.div(buttonPanel);
-                        row2.style.position = "relative";
-                        row2.style.display = "flex";
-                        row2.style.justifyContent = "center";
-                        row2.style.gap = "8px";
-                        row2.style.width = "100%";
-                        function createButton(text, parent) {
-                            const btn = ui.create.div(parent);
-                            btn.style.position = "relative";
-                            btn.style.display = "flex";
-                            btn.style.justifyContent = "center";
-                            btn.style.alignItems = "center";
-                            btn.style.width = "72px";
-                            btn.style.height = "34px";
-                            btn.style.background = "rgba(255,255,255,.15)";
-                            btn.style.borderRadius = "6px";
-                            btn.style.color = "white";
-                            btn.style.cursor = "pointer";
-                            btn.innerHTML = text;
-                            return btn;
-                        };
-                        function rotateShape(shape) {
-                            const h = shape.length;
-                            const w = shape[0].length;
-                            const result = [];
-                            for (let x = 0; x < w; x++) {
-                                result[x] = [];
-                                for (let y = h - 1; y >= 0; y--) {
-                                    result[x].push(shape[y][x]);
-                                }
-                            }
-                            return result;
-                        };
-                        dialog.rotateButton = createButton("旋转", row1);
-                        dialog.rotateButton.listen(function () {
-                            const piece = dialog.currentPieceData;
-                            if (!piece) return;
-                            piece.shape = rotateShape(piece.shape);
-                            renderInventory();
                         });
-                        function addInventory(level, count = 1) {
-                            const { PiecePool, sameShape } = lib.skill.mininianquanheng;
-                            const shape = PiecePool[level].randomGet().map(row => row.slice());
-                            const item = save.inventory.find(i => i.level === level && sameShape(i.shape, shape));
-                            if (item) {
-                                item.count += count;
-                                return item;
-                            }
-                            const piece = {
-                                id: get.id(),
-                                level,
-                                rotate: 0,
-                                shape,
-                                count,
-                            };
-                            save.inventory.push(piece);
-                            return piece;
+                        pieces.sort((a, b) => b.level - a.level);
+                        if (!pieces.length) return { bool: false };
+
+                        // dp[left][right] 保存达到对应新增格数时的最佳消耗方案。
+                        // 相同新增格数下优先少用积木，再优先减少降级损耗。
+                        let dp = Array.from({ length: leftCapacity + 1 }, () =>
+                            Array(rightCapacity + 1).fill(null)
+                        );
+                        dp[0][0] = { used: 0, waste: 0, actions: [] };
+                        const better = (candidate, current) => {
+                            if (!current) return true;
+                            if (candidate.used !== current.used) return candidate.used < current.used;
+                            return candidate.waste < current.waste;
                         };
-                        function removeInventory(piece, count = 1) {
-                            piece.count -= count;
-                            if (piece.count <= 0) {
-                                save.inventory.remove(piece);
-                                if (dialog.currentPieceData === piece) {
-                                    dialog.currentPieceData = null;
-                                }
-                            }
-                        };
-                        dialog.downButton = createButton("降级", row1);
-                        dialog.downButton.listen(function () {
-                            const piece = dialog.currentPieceData;
-                            if (!piece || piece.level <= 1) return;
-                            removeInventory(piece);
-                            addInventory(piece.level - 1);
-                            renderInventory();
-                            renderPiece(dialog.currentPieceData, dialog.currentPiece);
-                        });
-                        refreshInventorySelect();
-                        dialog.finishButton = createButton("完成", row2);
-                        dialog.finishButton.listen(function () {
-                            const left = countWeight(dialog.leftState);
-                            const right = countWeight(dialog.rightState);
-                            if (!dialog.currentPlace.length || left != right || left == 0) return;
-                            dialog.style.display = "none";
-                            let count = 0;
-                            dialog.currentPlace.forEach(info => {
-                                const shape = info.piece.shape;
-                                for (let y = 0; y < shape.length; y++) {
-                                    for (let x = 0; x < shape[y].length; x++) {
-                                        if (shape[y][x]) count++;
+                        for (const piece of pieces) {
+                            const next = dp.map(row => row.slice());
+                            for (let left = 0; left <= leftCapacity; left++) {
+                                for (let right = 0; right <= rightCapacity; right++) {
+                                    const state = dp[left][right];
+                                    if (!state) continue;
+                                    for (let amount = 1; amount <= piece.level; amount++) {
+                                        if (left + amount <= leftCapacity) {
+                                            const candidate = {
+                                                used: state.used + 1,
+                                                waste: state.waste + piece.level - amount,
+                                                actions: state.actions.concat({
+                                                    inventoryIndex: piece.inventoryIndex,
+                                                    side: 'left',
+                                                    amount,
+                                                }),
+                                            };
+                                            if (better(candidate, next[left + amount][right])) {
+                                                next[left + amount][right] = candidate;
+                                            }
+                                        }
+                                        if (right + amount <= rightCapacity) {
+                                            const candidate = {
+                                                used: state.used + 1,
+                                                waste: state.waste + piece.level - amount,
+                                                actions: state.actions.concat({
+                                                    inventoryIndex: piece.inventoryIndex,
+                                                    side: 'right',
+                                                    amount,
+                                                }),
+                                            };
+                                            if (better(candidate, next[left][right + amount])) {
+                                                next[left][right + amount] = candidate;
+                                            }
+                                        }
                                     }
                                 }
-                            });
-                            const full = left == 16 && right == 16;
-                            if (full) {
-                                player.addTempSkill(`${event.name}_inf`);
-                                for (let y = 0; y < 4; y++) {
-                                    for (let x = 0; x < 4; x++) {
-                                        dialog.leftState[y][x] = 0;
-                                        dialog.rightState[y][x] = 0;
-                                    }
-                                }
-                                save.placements.length = 0;
-                                renderBoard(dialog.leftBoard, dialog.leftState);
-                                renderBoard(dialog.rightBoard, dialog.rightState);
                             }
-                            game.resume();
-                            _status.imchoosing = false;
-                            event._result = {
-                                bool: true,
-                                count: count / 2,
-                                all: full || undefined,
-                            };
-                            resolve(event._result);
-                        });
-                        refreshWeight();
-                        dialog.cancelButton = createButton("取消", row2);
-                        event.switchToAuto = function () {
-                            dialog.style.display = "none";
-                            dialog.currentPlace.forEach(info => {
-                                let old = dialog.inventoryData.find(i => i.id == info.piece.id);
-                                if (old) {
-                                    old.count++;
-                                } else {
-                                    dialog.inventoryData.push({
-                                        ...info.piece,
-                                        count: 1,
-                                    });
+                            dp = next;
+                        }
+
+                        let best = null;
+                        for (let left = 0; left <= leftCapacity; left++) {
+                            for (let right = 0; right <= rightCapacity; right++) {
+                                const state = dp[left][right];
+                                if (!state || !state.used) continue;
+                                const finalLeft = leftCount + left;
+                                const finalRight = rightCount + right;
+                                if (finalLeft !== finalRight || finalLeft <= 0) continue;
+                                const candidate = {
+                                    left,
+                                    right,
+                                    finalCount: finalLeft,
+                                    ...state,
+                                };
+                                if (
+                                    !best ||
+                                    candidate.finalCount > best.finalCount ||
+                                    candidate.finalCount === best.finalCount && better(candidate, best)
+                                ) {
+                                    best = candidate;
                                 }
-                            });
+                            }
+                        }
+                        if (!best) return { bool: false };
+
+                        const usedCounts = Array(save.inventory.length).fill(0);
+                        for (const action of best.actions) {
+                            usedCounts[action.inventoryIndex]++;
+                            fillBoard(action.side === 'left' ? leftState : rightState, action.amount);
+                        }
+                        save.inventory.forEach((item, index) => {
+                            item.count = Math.max(0, (Number(item.count) || 0) - usedCounts[index]);
+                        });
+                        save.inventory = save.inventory.filter(item => item.count > 0);
+                        save.leftState = leftState;
+                        save.rightState = rightState;
+                        // 小游戏已删除，不再维护实体积木的摆放记录。
+                        save.placements = [];
+
+                        const full = best.finalCount === 16;
+                        if (full) {
                             for (let y = 0; y < 4; y++) {
                                 for (let x = 0; x < 4; x++) {
-                                    dialog.leftState[y][x] = dialog.initialLeftState[y][x];
-                                    dialog.rightState[y][x] = dialog.initialRightState[y][x];
+                                    save.leftState[y][x] = 0;
+                                    save.rightState[y][x] = 0;
                                 }
                             }
-                            save.placements.splice(0, save.placements.length, ...dialog.initialPlacements.map(info => ({
-                                ...info,
-                                piece: {
-                                    ...info.piece,
-                                    shape: info.piece.shape.map(row => row.slice()),
-                                },
-                            })));
-                            dialog.placements = save.placements;
-                            renderBoard(dialog.leftBoard, dialog.leftState);
-                            renderBoard(dialog.rightBoard, dialog.rightState);
-                            renderInventory();
-                            refreshWeight();
-                            dialog.currentPlace = [];
-                            dialog.currentCount = 0;
-                            game.resume();
-                            _status.imchoosing = false;
-                            event._result = { bool: false };
-                            resolve(event._result);
+                            save.placements.length = 0;
+                            player.addTempSkill(`${event.name}_inf`);
+                        }
+                        return {
+                            bool: true,
+                            count: (best.left + best.right) / 2,
+                            all: full || undefined,
                         };
-                        dialog.cancelButton.listen(event.switchToAuto);
-                        //积木库存
-                        const inventory = ui.create.div(dialog);
-                        inventory.style.display = "flex";
-                        inventory.style.flexWrap = "wrap";
-                        inventory.style.justifyContent = "center";
-                        inventory.style.alignItems = "center";
-                        inventory.style.gap = "10px";
-                        inventory.style.width = "760px";
-                        inventory.style.minHeight = "90px";
-                        inventory.style.background = "rgba(255,255,255,.08)";
-                        inventory.style.borderRadius = "8px";
-                        inventory.style.padding = "8px";
-                        inventory.style.position = "relative";
-                        dialog.inventory = inventory;
-                        renderInventory();
-                        //位置刷新防止点击dialog位置瞬移
-                        requestAnimationFrame(() => {
-                            const rect = dialog.getBoundingClientRect();
-                            const zoom = game.documentZoom || 1;
-                            dialog.style.transform = "";
-                            dialog.style.left = rect.left / zoom + "px";
-                            dialog.style.top = rect.top / zoom + "px";
-                        });
-                        game.pause();
-                        game.countChoose();
-                        return promise;
                     };
-                    let next;
-                    if (event.isMine()) next = 俄罗的俄罗斯方块(player);
-                    else if (event.isOnline()) {
-                        const { promise, resolve } = Promise.withResolvers();
-                        event.player.send(俄罗的俄罗斯方块, player);
-                        event.player.wait(async result => {
-                            if (result == 'ai') result = await switchToAuto();
-                            resolve(result);
-                        });
-                        game.pause();
-                        next = promise;
+                    const result = autoBalance(player);
+                    if (result?.bool) {
+                        const save = _status.mininianquanheng[player.playerid];
+                        const state = {
+                            leftState: save.leftState.map(row => row.slice()),
+                            rightState: save.rightState.map(row => row.slice()),
+                            inventory: save.inventory.map(item => ({
+                                ...item,
+                                shape: Array.isArray(item.shape) ? item.shape.map(row => row.slice()) : [[1]],
+                            })),
+                            placements: [],
+                        };
+                        // 将自动结算后的持久状态同步到所有客户端。
+                        game.broadcastAll((player, state) => {
+                            _status.mininianquanheng ??= {};
+                            const save = _status.mininianquanheng[player.playerid] ??= {};
+                            save.leftState = state.leftState.map(row => row.slice());
+                            save.rightState = state.rightState.map(row => row.slice());
+                            save.inventory = state.inventory.map(item => ({
+                                ...item,
+                                shape: item.shape.map(row => row.slice()),
+                            }));
+                            save.placements = [];
+                        }, player, state);
                     }
-                    else next = switchToAuto();
-                    const result = await next;
-                    game.resume();
-                    game.broadcastAll((originalTimeout) => {
-                        const dialog = _status.event.dialog;
-                        if (dialog) dialog[dialog.close ? 'close' : 'remove']();
-                        if (_status.connectMode) lib.configOL.choose_timeout = originalTimeout;
-                    }, originalTimeout);
                     if (!result?.bool) {
                         player.chat('杯具');
                         game.log(player, '本次并未配平天平');
@@ -47341,11 +46411,7 @@ const packs = function () {
             mininiansongwei: '颂威',
             mininiansongwei_info: '主公技，其他魏势力的角色的判定生效后，其可以令你摸一张牌。',
             mininianquanheng: '权衡',
-            mininianquanheng_info: `每回合限一次，出牌阶段或当你受到致命伤害时，你可以进行${get.poptip({
-                id: 'mininianquanheng_俄罗的俄罗斯方块',
-                name: '“权衡”',
-                info: '每轮开始时和你的回合结束时，根据场上存活角色数分配等量与这些角色体力值相同方块数组成的随机积木块，玩家每次“权衡”须使用拥有的积木块配平两边4×4天平，在此过程中可对自己拥有的积木块进行旋转或降级，若本次有放置积木块且使得两边成功配平则“权衡”成功并保存本次天平状态，否则“权衡”成功失败且归还本次放置的积木块',
-            })}。若“权衡”成功，则你可以令场上至多X名角色回复或失去1点体力（X为本次单侧放置的方块数的一半，向上取整）。若本次“权衡”将天平填满，则清空天平，本回合你发动${get.poptip('mininianying_Mnian_sunquan')}无次数限制，且你可以令一名角色摸四张牌并回复4点体力。`,
+            mininianquanheng_info: `每轮开始时和你的回合结束时，你获得等同于场上存活角色数的随机积木，这些积木的单位格数分别等于这些角色的体力值（至多为4）。每回合限一次，出牌阶段或当你受到致命伤害时，你可以发动“权衡”，系统自动使用库存积木配平两侧4×4天平：在保证左右占用格数相同的前提下，使两侧占用格数尽可能多；若本次放置了积木并成功配平，则保存天平状态，你可以令场上至多X名角色回复或失去1点体力（X为本次单侧放置的单位格数的一半，向上取整）。若本次“权衡”将天平填满，则清空天平，本回合你发动${get.poptip('mininianying_Mnian_sunquan')}无次数限制，且你可以令一名角色摸四张牌并回复4点体力。`,
             mininianrencai: '任才',
             mininianrencai_info: '每回合限一次，一名角色重铸牌时，你可以选择一项：①使用本次进入弃牌堆的一张牌，然后获得其余进入弃牌堆的牌；②获得本次进入弃牌堆的牌。',
             mininianying_Mnian_sunquan: '念影',
