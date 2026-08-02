@@ -40802,8 +40802,11 @@ const packs = function () {
                             leftState: save.leftState.map(row => row.slice()),
                             rightState: save.rightState.map(row => row.slice()),
                             inventory: save.inventory.map(item => ({
-                                ...item,
+                                id: item.id,
+                                level: item.level,
+                                rotate: item.rotate || 0,
                                 shape: Array.isArray(item.shape) ? item.shape.map(row => row.slice()) : [[1]],
+                                count: item.count,
                             })),
                             placements: [],
                         };
@@ -40814,8 +40817,11 @@ const packs = function () {
                             save.leftState = state.leftState.map(row => row.slice());
                             save.rightState = state.rightState.map(row => row.slice());
                             save.inventory = state.inventory.map(item => ({
-                                ...item,
+                                id: item.id,
+                                level: item.level,
+                                rotate: item.rotate,
                                 shape: item.shape.map(row => row.slice()),
+                                count: item.count,
                             }));
                             save.placements = [];
                         }, player, state);
