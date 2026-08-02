@@ -41138,7 +41138,17 @@ const packs = function () {
                             dialog.dragX = null;
                             dialog.dragY = null;
                             if (!dialog.dragNode) return;
-                            const zoom = game.documentZoom || 1;
+                            // getBoundingClientRect 与 Touch.clientX/Y 都是视口坐标；而方块挂在
+                            // 被 body.transform 缩放的 document.body 下，left/top 需要换算回
+                            // body 的局部坐标。直接使用 game.documentZoom 会在浏览器实际缩放值
+                            // 与其存在取整差异时逐格累积偏移。
+                            const bodyRect = document.body.getBoundingClientRect();
+                            const scaleX = bodyRect.width && document.body.offsetWidth ? bodyRect.width / document.body.offsetWidth : (game.documentZoom || 1);
+                            const scaleY = bodyRect.height && document.body.offsetHeight ? bodyRect.height / document.body.offsetHeight : (game.documentZoom || 1);
+                            const setViewportPosition = (left, top) => {
+                                dialog.dragNode.style.left = (left - bodyRect.left) / scaleX + "px";
+                                dialog.dragNode.style.top = (top - bodyRect.top) / scaleY + "px";
+                            };
                             const boards = [
                                 { board: dialog.leftBoard, state: dialog.leftState, side: "left" },
                                 { board: dialog.rightBoard, state: dialog.rightState, side: "right" },
@@ -41177,8 +41187,12 @@ const packs = function () {
                                 const firstRect = best.board[0][0].getBoundingClientRect();
                                 const nextXRect = best.board[0][1].getBoundingClientRect();
                                 const nextYRect = best.board[1][0].getBoundingClientRect();
-                                dialog.dragNode.style.left = (firstRect.left + best.x * (nextXRect.left - firstRect.left)) / zoom + "px";
-                                dialog.dragNode.style.top = (firstRect.top + best.y * (nextYRect.top - firstRect.top)) / zoom + "px";
+                                // 预览方块的数组原点与逻辑落点使用同一格坐标，确保吸附显示
+                                // 与 touchend 时写入 state[oy + y][ox + x] 的位置完全一致。
+                                setViewportPosition(
+                                    firstRect.left + best.x * (nextXRect.left - firstRect.left),
+                                    firstRect.top + best.y * (nextYRect.top - firstRect.top)
+                                );
                                 dialog.dragNode.style.opacity = "0.95";
                                 dialog.dragNode.style.filter = "drop-shadow(0 0 6px #ffd700)";
                                 dialog.dragSide = best.side;
@@ -41188,8 +41202,8 @@ const packs = function () {
                                 dialog.dragY = best.y;
                                 return;
                             }
-                            dialog.dragNode.style.left = (clientX / zoom - dialog.dragNode.dragWidth / 2) + "px";
-                            dialog.dragNode.style.top = (clientY / zoom - dialog.dragNode.dragHeight / 2) + "px";
+                            const dragRect = dialog.dragNode.getBoundingClientRect();
+                            setViewportPosition(clientX - dragRect.width / 2, clientY - dragRect.height / 2);
                             dialog.dragNode.style.opacity = "0.7";
                             dialog.dragNode.style.filter = "";
                         };
