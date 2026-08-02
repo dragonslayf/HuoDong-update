@@ -40887,7 +40887,7 @@ const packs = function () {
                             }
                             refreshInventorySelect();
                         };
-                        function createDragPiece(piece) {
+                        function createDragPiece(piece, isTouch = false) {
                             const node = document.createElement("div");
                             node.style.position = "fixed";
                             node.style.pointerEvents = "none";
@@ -40895,10 +40895,21 @@ const packs = function () {
                             node.style.opacity = "0.7";
                             node.style.transition = "none";
                             node.style.animation = "none";
-                            node.dataset.size = 48;
-                            node.dataset.gap = 4;
+                            if (isTouch) {
+                                // 触屏拖拽层直接挂到未缩放的 html 根节点，彻底避开
+                                // body.transform 对 position:fixed 包含块和坐标原点的影响。
+                                // 同时使用棋盘格在视口中的实际尺寸，使浮层与缩放后的棋盘等大。
+                                const firstCellRect = dialog.leftBoard[0][0].getBoundingClientRect();
+                                const nextCellRect = dialog.leftBoard[0][1].getBoundingClientRect();
+                                node.dataset.size = firstCellRect.width || 48;
+                                node.dataset.gap = Math.max(0, nextCellRect.left - firstCellRect.right) || 4;
+                            }
+                            else {
+                                node.dataset.size = 48;
+                                node.dataset.gap = 4;
+                            }
                             renderPiece(piece, node);
-                            document.body.appendChild(node);
+                            (isTouch ? document.documentElement : document.body).appendChild(node);
                             const shape = piece.shape;
                             const cellSize = Number(node.dataset.size);
                             const gap = Number(node.dataset.gap) || 2;
@@ -40912,7 +40923,7 @@ const packs = function () {
                             if (isTouch && dialog.dragNode) return;
                             dialog.currentPieceData = piece;
                             refreshInventorySelect();
-                            const drag = createDragPiece(piece);
+                            const drag = createDragPiece(piece, isTouch);
                             dialog.dragNode = drag;
                             const zoom = game.documentZoom || 1;
                             const rect = sourceNode.getBoundingClientRect();
@@ -41138,16 +41149,11 @@ const packs = function () {
                             dialog.dragX = null;
                             dialog.dragY = null;
                             if (!dialog.dragNode) return;
-                            // getBoundingClientRect 与 Touch.clientX/Y 都是视口坐标；而方块挂在
-                            // 被 body.transform 缩放的 document.body 下，left/top 需要换算回
-                            // body 的局部坐标。直接使用 game.documentZoom 会在浏览器实际缩放值
-                            // 与其存在取整差异时逐格累积偏移。
-                            const bodyRect = document.body.getBoundingClientRect();
-                            const scaleX = bodyRect.width && document.body.offsetWidth ? bodyRect.width / document.body.offsetWidth : (game.documentZoom || 1);
-                            const scaleY = bodyRect.height && document.body.offsetHeight ? bodyRect.height / document.body.offsetHeight : (game.documentZoom || 1);
+                            // 触屏浮层位于未缩放的 html 根节点下，left/top、触点坐标和
+                            // getBoundingClientRect 均为同一套视口坐标，不再进行缩放反算。
                             const setViewportPosition = (left, top) => {
-                                dialog.dragNode.style.left = (left - bodyRect.left) / scaleX + "px";
-                                dialog.dragNode.style.top = (top - bodyRect.top) / scaleY + "px";
+                                dialog.dragNode.style.left = left + "px";
+                                dialog.dragNode.style.top = top + "px";
                             };
                             const boards = [
                                 { board: dialog.leftBoard, state: dialog.leftState, side: "left" },
