@@ -40896,13 +40896,17 @@ const packs = function () {
                             node.style.transition = "none";
                             node.style.animation = "none";
                             if (isTouch) {
-                                // 触屏拖拽层直接挂到未缩放的 html 根节点，彻底避开
-                                // body.transform 对 position:fixed 包含块和坐标原点的影响。
-                                // 同时使用棋盘格在视口中的实际尺寸，使浮层与缩放后的棋盘等大。
-                                const firstCellRect = dialog.leftBoard[0][0].getBoundingClientRect();
-                                const nextCellRect = dialog.leftBoard[0][1].getBoundingClientRect();
-                                node.dataset.size = firstCellRect.width || 48;
-                                node.dataset.gap = Math.max(0, nextCellRect.left - firstCellRect.right) || 4;
+                                // 手机端使用独立的小预览，不再把棋盘格的视口尺寸再次写入 DOM，
+                                // 避免不同 WebView 的页面缩放令方块被二次放大。
+                                node.dataset.size = 24;
+                                node.dataset.gap = 2;
+                                node.style.left = "0";
+                                node.style.top = "0";
+                                node.style.display = "block";
+                                node.style.margin = "0";
+                                node.style.padding = "0";
+                                node.style.transformOrigin = "0 0";
+                                node.style.contain = "layout style paint";
                             }
                             else {
                                 node.dataset.size = 48;
@@ -40913,10 +40917,27 @@ const packs = function () {
                             const shape = piece.shape;
                             const cellSize = Number(node.dataset.size);
                             const gap = Number(node.dataset.gap) || 2;
-                            const cols = shape[0].length;
+                            const cols = isTouch ? Math.max(...shape.map(row => row.length)) : shape[0].length;
                             const rows = shape.length;
                             node.dragWidth = cols * cellSize + (cols - 1) * gap;
                             node.dragHeight = rows * cellSize + (rows - 1) * gap;
+                            if (isTouch) {
+                                node.style.width = node.dragWidth + "px";
+                                node.style.height = node.dragHeight + "px";
+                                let centerX = 0, centerY = 0, count = 0;
+                                for (let y = 0; y < shape.length; y++) {
+                                    for (let x = 0; x < shape[y].length; x++) {
+                                        if (!shape[y][x]) continue;
+                                        centerX += x * (cellSize + gap) + cellSize / 2;
+                                        centerY += y * (cellSize + gap) + cellSize / 2;
+                                        count++;
+                                    }
+                                }
+                                // 以所有实体格的重心作为触点锚点；异形方块不会再因为透明格
+                                // 让手指落在可见方块的右下方。
+                                node.touchCenterX = count ? centerX / count : node.dragWidth / 2;
+                                node.touchCenterY = count ? centerY / count : node.dragHeight / 2;
+                            }
                             return node;
                         };
                         function startDrag(e, piece, isTouch = false, sourceNode = e.currentTarget) {
@@ -40981,6 +41002,7 @@ const packs = function () {
                                     animationFrameId = null;
                                 }
                                 clearListeners();
+                                if (isTouch) clearTouchSnapPreview();
                                 if (cancelled !== true && dialog.dragBoard && dialog.dragState && dialog.dragX != null && dialog.dragY != null) {
                                     placePiece(dialog.dragState, piece.shape, dialog.dragX, dialog.dragY);
                                     dialog.currentPlace.push({
@@ -41142,6 +41164,54 @@ const packs = function () {
                             dialog.dragX = best.x;
                             dialog.dragY = best.y;
                         };
+                        function clearTouchSnapPreview() {
+                            if (!dialog.touchPreviewCells?.length) return;
+                            for (const info of dialog.touchPreviewCells) {
+                                info.cell.style.background = info.background;
+                                info.cell.style.boxShadow = info.boxShadow;
+                                info.cell.style.opacity = info.opacity;
+                                info.cell.style.transition = info.transition;
+                            }
+                            dialog.touchPreviewCells = [];
+                        };
+                        function showTouchSnapPreview(best, piece) {
+                            const cells = [];
+                            for (let py = 0; py < piece.shape.length; py++) {
+                                for (let px = 0; px < piece.shape[py].length; px++) {
+                                    if (!piece.shape[py][px]) continue;
+                                    const cell = best.board[best.y + py][best.x + px];
+                                    cells.push({
+                                        cell,
+                                        background: cell.style.background,
+                                        boxShadow: cell.style.boxShadow,
+                                        opacity: cell.style.opacity,
+                                        transition: cell.style.transition,
+                                    });
+                                    cell.style.transition = "none";
+                                    cell.style.background = "#4dabff";
+                                    cell.style.boxShadow = "inset 0 0 0 3px #ffd700";
+                                    cell.style.opacity = "0.9";
+                                }
+                            }
+                            dialog.touchPreviewCells = cells;
+                        };
+                        function setTouchDragCenter(clientX, clientY) {
+                            const node = dialog.dragNode;
+                            if (!node) return;
+                            let translateX = clientX - node.touchCenterX;
+                            let translateY = clientY - node.touchCenterY;
+                            node.style.transform = `translate3d(${translateX}px, ${translateY}px, 0)`;
+                            // 某些手机 WebView 仍会给 html 根节点附加页面缩放或视口偏移。
+                            // 根据实际渲染结果反向校正一次，而不是假定某个缩放值。
+                            const rect = node.getBoundingClientRect();
+                            const scaleX = rect.width && node.dragWidth ? rect.width / node.dragWidth : 1;
+                            const scaleY = rect.height && node.dragHeight ? rect.height / node.dragHeight : 1;
+                            const renderedCenterX = rect.left + node.touchCenterX * scaleX;
+                            const renderedCenterY = rect.top + node.touchCenterY * scaleY;
+                            translateX += (clientX - renderedCenterX) / scaleX;
+                            translateY += (clientY - renderedCenterY) / scaleY;
+                            node.style.transform = `translate3d(${translateX}px, ${translateY}px, 0)`;
+                        };
                         function updateTouchDragPosition(piece, clientX, clientY) {
                             dialog.dragSide = null;
                             dialog.dragBoard = null;
@@ -41149,12 +41219,8 @@ const packs = function () {
                             dialog.dragX = null;
                             dialog.dragY = null;
                             if (!dialog.dragNode) return;
-                            // 触屏浮层位于未缩放的 html 根节点下，left/top、触点坐标和
-                            // getBoundingClientRect 均为同一套视口坐标，不再进行缩放反算。
-                            const setViewportPosition = (left, top) => {
-                                dialog.dragNode.style.left = left + "px";
-                                dialog.dragNode.style.top = top + "px";
-                            };
+                            clearTouchSnapPreview();
+                            dialog.dragNode.style.visibility = "visible";
                             const boards = [
                                 { board: dialog.leftBoard, state: dialog.leftState, side: "left" },
                                 { board: dialog.rightBoard, state: dialog.rightState, side: "right" },
@@ -41169,19 +41235,18 @@ const packs = function () {
                                 for (let oy = 1 - piece.shape.length; oy < 4; oy++) {
                                     for (let ox = 1 - shapeWidth; ox < 4; ox++) {
                                         if (!canPlace(info.state, piece.shape, ox, oy)) continue;
-                                        let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity, maxBottom = -Infinity;
+                                        let centerX = 0, centerY = 0, count = 0;
                                         for (let py = 0; py < piece.shape.length; py++) {
                                             for (let px = 0; px < piece.shape[py].length; px++) {
                                                 if (!piece.shape[py][px]) continue;
                                                 const cell = info.board[oy + py][ox + px].getBoundingClientRect();
-                                                minLeft = Math.min(minLeft, cell.left);
-                                                minTop = Math.min(minTop, cell.top);
-                                                maxRight = Math.max(maxRight, cell.right);
-                                                maxBottom = Math.max(maxBottom, cell.bottom);
+                                                centerX += (cell.left + cell.right) / 2;
+                                                centerY += (cell.top + cell.bottom) / 2;
+                                                count++;
                                             }
                                         }
-                                        const dx = clientX - (minLeft + maxRight) / 2;
-                                        const dy = clientY - (minTop + maxBottom) / 2;
+                                        const dx = clientX - centerX / count;
+                                        const dy = clientY - centerY / count;
                                         const distance = dx * dx + dy * dy;
                                         if (!best || distance < best.distance) {
                                             best = { ...info, x: ox, y: oy, distance };
@@ -41190,17 +41255,10 @@ const packs = function () {
                                 }
                             }
                             if (best) {
-                                const firstRect = best.board[0][0].getBoundingClientRect();
-                                const nextXRect = best.board[0][1].getBoundingClientRect();
-                                const nextYRect = best.board[1][0].getBoundingClientRect();
-                                // 预览方块的数组原点与逻辑落点使用同一格坐标，确保吸附显示
-                                // 与 touchend 时写入 state[oy + y][ox + x] 的位置完全一致。
-                                setViewportPosition(
-                                    firstRect.left + best.x * (nextXRect.left - firstRect.left),
-                                    firstRect.top + best.y * (nextYRect.top - firstRect.top)
-                                );
-                                dialog.dragNode.style.opacity = "0.95";
-                                dialog.dragNode.style.filter = "drop-shadow(0 0 6px #ffd700)";
+                                // 直接在目标棋盘格上绘制吸附预览，不再用浮层模拟格位坐标；
+                                // 因而预览位置天然与最终写入的逻辑格完全一致。
+                                showTouchSnapPreview(best, piece);
+                                dialog.dragNode.style.visibility = "hidden";
                                 dialog.dragSide = best.side;
                                 dialog.dragBoard = best.board;
                                 dialog.dragState = best.state;
@@ -41208,8 +41266,7 @@ const packs = function () {
                                 dialog.dragY = best.y;
                                 return;
                             }
-                            const dragRect = dialog.dragNode.getBoundingClientRect();
-                            setViewportPosition(clientX - dragRect.width / 2, clientY - dragRect.height / 2);
+                            setTouchDragCenter(clientX, clientY);
                             dialog.dragNode.style.opacity = "0.7";
                             dialog.dragNode.style.filter = "";
                         };
