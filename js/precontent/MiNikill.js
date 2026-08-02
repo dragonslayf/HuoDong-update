@@ -40836,6 +40836,8 @@ const packs = function () {
                                     else {
                                         cell.style.background = "white";
                                     }
+                                    cell.style.boxShadow = "";
+                                    cell.style.zIndex = "";
                                     cell.style.cursor = placement ? "grab" : "";
                                     cell.style.touchAction = placement ? "none" : "";
                                 }
@@ -41357,7 +41359,54 @@ const packs = function () {
                             const anchorX = node.touchAnchorX ?? node.touchCenterX;
                             const anchorY = node.touchAnchorY ?? node.touchCenterY;
                             const point = getDialogLocalPoint(clientX, clientY);
-                            node.style.transform = `translate3d(${point.x - anchorX}px, ${point.y - anchorY}px, 0)`;
+                            let localX = point.x - anchorX;
+                            let localY = point.y - anchorY;
+                            node.style.transform = `translate3d(${localX}px, ${localY}px, 0)`;
+
+                            // 理论比例换算在部分手机 WebView 中仍会受到页面 zoom、body transform
+                            // 及窗口自身 translate 的共同影响。用浏览器真实渲染结果再校准一次，
+                            // 保证被按住的实体格位置与触点严格重合，而不是固定偏在左上方。
+                            const nodeRect = node.getBoundingClientRect();
+                            const nodeWidth = node.offsetWidth || node.dragWidth || 1;
+                            const nodeHeight = node.offsetHeight || node.dragHeight || 1;
+                            const renderedAnchorX = nodeRect.left + anchorX * nodeRect.width / nodeWidth;
+                            const renderedAnchorY = nodeRect.top + anchorY * nodeRect.height / nodeHeight;
+                            const dialogRect = dialog.getBoundingClientRect();
+                            const dialogWidth = dialog.offsetWidth || dialogRect.width || 1;
+                            const dialogHeight = dialog.offsetHeight || dialogRect.height || 1;
+                            const scaleX = dialogRect.width / dialogWidth || 1;
+                            const scaleY = dialogRect.height / dialogHeight || 1;
+                            localX += (clientX - renderedAnchorX) / scaleX;
+                            localY += (clientY - renderedAnchorY) / scaleY;
+                            node.style.transform = `translate3d(${localX}px, ${localY}px, 0)`;
+                        };
+                        function clearTouchMatchHighlight() {
+                            if (!dialog.touchMatchCells?.length) return;
+                            for (const cell of dialog.touchMatchCells) {
+                                const side = cell.dataset.side;
+                                const x = Number(cell.dataset.x);
+                                const y = Number(cell.dataset.y);
+                                const state = side === "left" ? dialog.leftState : dialog.rightState;
+                                cell.style.background = state[y][x] ? "#4dabff" : "white";
+                                cell.style.boxShadow = "";
+                                cell.style.zIndex = "";
+                            }
+                            dialog.touchMatchCells = [];
+                        };
+                        function showTouchMatchHighlight(board, piece, ox, oy) {
+                            clearTouchMatchHighlight();
+                            dialog.touchMatchCells = [];
+                            for (let y = 0; y < piece.shape.length; y++) {
+                                for (let x = 0; x < piece.shape[y].length; x++) {
+                                    if (!piece.shape[y][x]) continue;
+                                    const cell = board[oy + y]?.[ox + x];
+                                    if (!cell) continue;
+                                    cell.style.background = "#ffd700";
+                                    cell.style.boxShadow = "inset 0 0 0 3px #fff2a8, 0 0 9px #ffd700";
+                                    cell.style.zIndex = "1";
+                                    dialog.touchMatchCells.push(cell);
+                                }
+                            }
                         };
                         function getTouchBoardCell(clientX, clientY) {
                             let node = document.elementFromPoint(clientX, clientY);
@@ -41374,6 +41423,8 @@ const packs = function () {
                             dialog.dragX = null;
                             dialog.dragY = null;
                             if (!dialog.dragNode) return;
+                            clearTouchMatchHighlight();
+                            dialog.dragNode.style.visibility = "visible";
                             setTouchDragPosition(clientX, clientY);
                             const cell = getTouchBoardCell(clientX, clientY);
                             if (!cell) {
@@ -41409,8 +41460,11 @@ const packs = function () {
                             dialog.dragState = state;
                             dialog.dragX = x;
                             dialog.dragY = y;
-                            dialog.dragNode.style.opacity = "0.9";
-                            dialog.dragNode.style.filter = "drop-shadow(0 0 4px #ffd700)";
+                            showTouchMatchHighlight(board, piece, x, y);
+                            // 棋盘上的金色格就是松手后的真实位置。隐藏自由浮层，避免较小的
+                            // 拖拽预览与棋盘格尺寸不同而继续制造“左上偏移”的视觉错觉。
+                            dialog.dragNode.style.visibility = "hidden";
+                            dialog.dragNode.style.filter = "";
                         };
                         dialog.leftBoard = createBoard(leftPanel, "left");
                         dialog.rightBoard = createBoard(rightPanel, "right");
