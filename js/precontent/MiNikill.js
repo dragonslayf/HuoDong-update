@@ -40959,10 +40959,16 @@ const packs = function () {
                             node.style.animation = "none";
                             if (isTouch) {
                                 // 手机端预览属于小游戏窗口，窗口移动时方块会随窗口一起移动；
-                                // 后续位置全部使用窗口内部坐标，不再使用整屏坐标。
+                                // 使用和棋盘格相同的布局尺寸，二者会一起受到小游戏窗口缩放，
+                                // 避免预览块比实际空位偏小。
                                 node.style.position = "absolute";
-                                node.dataset.size = 24;
-                                node.dataset.gap = 2;
+                                const board = dialog.leftBoard || dialog.rightBoard;
+                                const firstCell = board?.[0]?.[0];
+                                const secondCell = board?.[0]?.[1];
+                                const cellSize = firstCell?.offsetWidth || board?.cellSize || 48;
+                                const cellGap = secondCell ? Math.max(0, secondCell.offsetLeft - firstCell.offsetLeft - cellSize) : (board?.gap || 4);
+                                node.dataset.size = cellSize;
+                                node.dataset.gap = cellGap;
                                 node.style.left = "0";
                                 node.style.top = "0";
                                 node.style.display = "block";
@@ -41358,7 +41364,12 @@ const packs = function () {
                             if (!node) return;
                             const anchorX = node.touchAnchorX ?? node.touchCenterX;
                             const anchorY = node.touchAnchorY ?? node.touchCenterY;
-                            const point = getDialogLocalPoint(clientX, clientY);
+                            const dialogRect = dialog.getBoundingClientRect();
+                            // 此前多版理论坐标换算仍会使实体固定偏向左上。按实际测试要求，
+                            // 将显示锚点直接向右、向下各补偿小游戏浮动窗口显示尺寸的 1/4。
+                            const targetClientX = clientX + dialogRect.width / 4;
+                            const targetClientY = clientY + dialogRect.height / 4;
+                            const point = getDialogLocalPoint(targetClientX, targetClientY);
                             let localX = point.x - anchorX;
                             let localY = point.y - anchorY;
                             node.style.transform = `translate3d(${localX}px, ${localY}px, 0)`;
@@ -41371,13 +41382,12 @@ const packs = function () {
                             const nodeHeight = node.offsetHeight || node.dragHeight || 1;
                             const renderedAnchorX = nodeRect.left + anchorX * nodeRect.width / nodeWidth;
                             const renderedAnchorY = nodeRect.top + anchorY * nodeRect.height / nodeHeight;
-                            const dialogRect = dialog.getBoundingClientRect();
                             const dialogWidth = dialog.offsetWidth || dialogRect.width || 1;
                             const dialogHeight = dialog.offsetHeight || dialogRect.height || 1;
                             const scaleX = dialogRect.width / dialogWidth || 1;
                             const scaleY = dialogRect.height / dialogHeight || 1;
-                            localX += (clientX - renderedAnchorX) / scaleX;
-                            localY += (clientY - renderedAnchorY) / scaleY;
+                            localX += (targetClientX - renderedAnchorX) / scaleX;
+                            localY += (targetClientY - renderedAnchorY) / scaleY;
                             node.style.transform = `translate3d(${localX}px, ${localY}px, 0)`;
                         };
                         function clearTouchMatchHighlight() {
@@ -41416,6 +41426,44 @@ const packs = function () {
                             }
                             return null;
                         };
+                        function getTouchPieceMatch(piece) {
+                            const drag = dialog.dragNode;
+                            const box = drag?.firstElementChild;
+                            if (!box) return null;
+                            let match = null;
+                            const cells = [];
+                            const cellKeys = new Set();
+                            for (let y = 0; y < piece.shape.length; y++) {
+                                for (let x = 0; x < piece.shape[y].length; x++) {
+                                    if (!piece.shape[y][x]) continue;
+                                    const dragCell = box.children?.[y]?.children?.[x];
+                                    if (!dragCell) return null;
+                                    const rect = dragCell.getBoundingClientRect();
+                                    const cell = getTouchBoardCell((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+                                    if (!cell) return null;
+                                    const side = cell.dataset.side;
+                                    const boardX = Number(cell.dataset.x);
+                                    const boardY = Number(cell.dataset.y);
+                                    const originX = boardX - x;
+                                    const originY = boardY - y;
+                                    if (!match) {
+                                        match = { side, x: originX, y: originY };
+                                    }
+                                    else if (match.side !== side || match.x !== originX || match.y !== originY) {
+                                        return null;
+                                    }
+                                    const key = `${side}_${boardX}_${boardY}`;
+                                    if (cellKeys.has(key)) return null;
+                                    cellKeys.add(key);
+                                    cells.push(cell);
+                                }
+                            }
+                            if (!match || !cells.length) return null;
+                            const board = match.side === "left" ? dialog.leftBoard : dialog.rightBoard;
+                            const state = match.side === "left" ? dialog.leftState : dialog.rightState;
+                            if (!canPlace(state, piece.shape, match.x, match.y)) return null;
+                            return { ...match, board, state, cells };
+                        };
                         function updateTouchDragPosition(piece, clientX, clientY) {
                             dialog.dragSide = null;
                             dialog.dragBoard = null;
@@ -41426,45 +41474,18 @@ const packs = function () {
                             clearTouchMatchHighlight();
                             dialog.dragNode.style.visibility = "visible";
                             setTouchDragPosition(clientX, clientY);
-                            const cell = getTouchBoardCell(clientX, clientY);
-                            if (!cell) {
-                                dialog.dragNode.style.opacity = "0.7";
-                                dialog.dragNode.style.filter = "";
-                                return;
-                            }
-                            let anchorX = dialog.dragNode.touchAnchorCellX;
-                            let anchorY = dialog.dragNode.touchAnchorCellY;
-                            if (anchorX == null || anchorY == null) {
-                                outer: for (let y = 0; y < piece.shape.length; y++) {
-                                    for (let x = 0; x < piece.shape[y].length; x++) {
-                                        if (!piece.shape[y][x]) continue;
-                                        anchorX = x;
-                                        anchorY = y;
-                                        break outer;
-                                    }
-                                }
-                            }
-                            const side = cell.dataset.side;
-                            const x = Number(cell.dataset.x) - anchorX;
-                            const y = Number(cell.dataset.y) - anchorY;
-                            const board = side === "left" ? dialog.leftBoard : dialog.rightBoard;
-                            const state = side === "left" ? dialog.leftState : dialog.rightState;
-                            // 不搜索附近空位：只有手指当前压住的格子所对应的原点合法时才允许落下。
-                            if (!canPlace(state, piece.shape, x, y)) {
-                                dialog.dragNode.style.opacity = "0.45";
-                                dialog.dragNode.style.filter = "grayscale(1)";
-                                return;
-                            }
-                            dialog.dragSide = side;
-                            dialog.dragBoard = board;
-                            dialog.dragState = state;
-                            dialog.dragX = x;
-                            dialog.dragY = y;
-                            showTouchMatchHighlight(board, piece, x, y);
-                            // 棋盘上的金色格就是松手后的真实位置。隐藏自由浮层，避免较小的
-                            // 拖拽预览与棋盘格尺寸不同而继续制造“左上偏移”的视觉错觉。
-                            dialog.dragNode.style.visibility = "hidden";
+                            dialog.dragNode.style.opacity = "0.7";
                             dialog.dragNode.style.filter = "";
+                            // 自动匹配只检查实体当前实际覆盖的空位，不修改实体位置、不搜索
+                            // 附近格子，也不隐藏预览，因此没有任何吸附或跳格效果。
+                            const match = getTouchPieceMatch(piece);
+                            if (!match) return;
+                            dialog.dragSide = match.side;
+                            dialog.dragBoard = match.board;
+                            dialog.dragState = match.state;
+                            dialog.dragX = match.x;
+                            dialog.dragY = match.y;
+                            showTouchMatchHighlight(match.board, piece, match.x, match.y);
                         };
                         dialog.leftBoard = createBoard(leftPanel, "left");
                         dialog.rightBoard = createBoard(rightPanel, "right");
