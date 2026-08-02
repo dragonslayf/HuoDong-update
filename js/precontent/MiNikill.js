@@ -40860,9 +40860,9 @@ const packs = function () {
                                     item.ontouchstart = function (e) {
                                         e.stopPropagation();
                                         e.preventDefault();
-                                        const evt = e.touches[0];
-                                        evt.currentTarget = item;
-                                        startDrag(evt, piece);
+                                        const evt = e.changedTouches[0] || e.touches[0];
+                                        if (!evt) return;
+                                        startDrag(evt, piece, true, item);
                                     };
                                 }
                                 else {
@@ -40908,15 +40908,18 @@ const packs = function () {
                             node.dragHeight = rows * cellSize + (rows - 1) * gap;
                             return node;
                         };
-                        function startDrag(e, piece) {
+                        function startDrag(e, piece, isTouch = false, sourceNode = e.currentTarget) {
+                            if (isTouch && dialog.dragNode) return;
                             dialog.currentPieceData = piece;
                             refreshInventorySelect();
                             const drag = createDragPiece(piece);
                             dialog.dragNode = drag;
                             const zoom = game.documentZoom || 1;
-                            const rect = e.currentTarget.getBoundingClientRect();
+                            const rect = sourceNode.getBoundingClientRect();
                             const offsetX = (e.clientX - rect.left) / zoom;
                             const offsetY = (e.clientY - rect.top) / zoom;
+                            const touchIdentifier = isTouch ? e.identifier : null;
+                            let lastTouch = isTouch ? { clientX: e.clientX, clientY: e.clientY } : null;
                             let animationFrameId = null;
                             function move(ev) {
                                 if (animationFrameId) cancelAnimationFrame(animationFrameId);
@@ -40926,29 +40929,56 @@ const packs = function () {
                                     updateDragPosition(piece);
                                 });
                             };
+                            function getTouch(list) {
+                                if (!list) return null;
+                                for (const touch of list) {
+                                    if (touch.identifier === touchIdentifier) return touch;
+                                }
+                                return null;
+                            };
+                            function moveTouchPoint(point, immediately = false) {
+                                if (!point) return;
+                                lastTouch = { clientX: point.clientX, clientY: point.clientY };
+                                const update = () => {
+                                    animationFrameId = null;
+                                    updateTouchDragPosition(piece, lastTouch.clientX, lastTouch.clientY);
+                                };
+                                if (animationFrameId) cancelAnimationFrame(animationFrameId);
+                                if (immediately) update();
+                                else animationFrameId = requestAnimationFrame(update);
+                            };
                             function touchMove(e) {
-                                move(e.touches[0]);
+                                const touch = getTouch(e.touches);
+                                if (!touch) return;
+                                moveTouchPoint(touch);
                                 e.preventDefault();
                             };
-                            move(e);
-                            function end() {
-                                if (animationFrameId) {
-                                    cancelAnimationFrame(animationFrameId);
-                                    animationFrameId = null;
-                                }
-                                if (lib.config.touchscreen) {
+                            function clearListeners() {
+                                if (isTouch) {
                                     document.removeEventListener("touchmove", touchMove);
-                                    document.removeEventListener("touchend", end);
+                                    document.removeEventListener("touchend", touchEnd);
+                                    document.removeEventListener("touchcancel", touchCancel);
                                 }
                                 else {
                                     document.removeEventListener("mousemove", move);
                                     document.removeEventListener("mouseup", end);
                                 }
-                                if (dialog.dragBoard && dialog.dragState && dialog.dragX != null && dialog.dragY != null) {
+                            };
+                            function end(cancelled = false) {
+                                if (animationFrameId) {
+                                    cancelAnimationFrame(animationFrameId);
+                                    animationFrameId = null;
+                                }
+                                clearListeners();
+                                if (cancelled !== true && dialog.dragBoard && dialog.dragState && dialog.dragX != null && dialog.dragY != null) {
                                     placePiece(dialog.dragState, piece.shape, dialog.dragX, dialog.dragY);
                                     dialog.currentPlace.push({
                                         side: dialog.dragSide,
-                                        piece: piece,
+                                        // 触屏端保存落下时的形状，避免之后旋转同类库存时已放置方块跟着变化
+                                        piece: isTouch ? {
+                                            ...piece,
+                                            shape: piece.shape.map(row => row.slice()),
+                                        } : piece,
                                         x: dialog.dragX,
                                         y: dialog.dragY,
                                     });
@@ -40968,11 +40998,30 @@ const packs = function () {
                                 dialog.dragX = null;
                                 dialog.dragY = null;
                             };
-                            if (lib.config.touchscreen) {
+                            function touchEnd(e) {
+                                const touch = getTouch(e.changedTouches);
+                                // 其他手指松开时不结束当前方块的拖拽
+                                if (!touch && e.changedTouches?.length) return;
+                                if (touch) moveTouchPoint(touch, true);
+                                else if (lastTouch) updateTouchDragPosition(piece, lastTouch.clientX, lastTouch.clientY);
+                                e.preventDefault();
+                                end(false);
+                            };
+                            function touchCancel(e) {
+                                const touch = getTouch(e.changedTouches);
+                                if (!touch && e.changedTouches?.length) return;
+                                e.preventDefault();
+                                end(true);
+                            };
+                            if (isTouch) {
+                                // 触屏端以手指为方块中心，不再沿用库存缩略图的点击偏移
+                                moveTouchPoint(e, true);
                                 document.addEventListener("touchmove", touchMove, { passive: false });
-                                document.addEventListener("touchend", end);
+                                document.addEventListener("touchend", touchEnd, { passive: false });
+                                document.addEventListener("touchcancel", touchCancel, { passive: false });
                             }
                             else {
+                                move(e);
                                 document.addEventListener("mousemove", move);
                                 document.addEventListener("mouseup", end);
                             }
@@ -41081,6 +41130,68 @@ const packs = function () {
                             dialog.dragState = best.side == "left" ? dialog.leftState : dialog.rightState;
                             dialog.dragX = best.x;
                             dialog.dragY = best.y;
+                        };
+                        function updateTouchDragPosition(piece, clientX, clientY) {
+                            dialog.dragSide = null;
+                            dialog.dragBoard = null;
+                            dialog.dragState = null;
+                            dialog.dragX = null;
+                            dialog.dragY = null;
+                            if (!dialog.dragNode) return;
+                            const zoom = game.documentZoom || 1;
+                            const boards = [
+                                { board: dialog.leftBoard, state: dialog.leftState, side: "left" },
+                                { board: dialog.rightBoard, state: dialog.rightState, side: "right" },
+                            ];
+                            let best = null;
+                            for (const info of boards) {
+                                const boardRect = info.board.node.getBoundingClientRect();
+                                const cellRect = info.board[0][0].getBoundingClientRect();
+                                const snapMargin = Math.max(cellRect.width, cellRect.height) * 0.9;
+                                if (clientX < boardRect.left - snapMargin || clientX > boardRect.right + snapMargin || clientY < boardRect.top - snapMargin || clientY > boardRect.bottom + snapMargin) continue;
+                                const shapeWidth = Math.max(...piece.shape.map(row => row.length));
+                                for (let oy = 1 - piece.shape.length; oy < 4; oy++) {
+                                    for (let ox = 1 - shapeWidth; ox < 4; ox++) {
+                                        if (!canPlace(info.state, piece.shape, ox, oy)) continue;
+                                        let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity, maxBottom = -Infinity;
+                                        for (let py = 0; py < piece.shape.length; py++) {
+                                            for (let px = 0; px < piece.shape[py].length; px++) {
+                                                if (!piece.shape[py][px]) continue;
+                                                const cell = info.board[oy + py][ox + px].getBoundingClientRect();
+                                                minLeft = Math.min(minLeft, cell.left);
+                                                minTop = Math.min(minTop, cell.top);
+                                                maxRight = Math.max(maxRight, cell.right);
+                                                maxBottom = Math.max(maxBottom, cell.bottom);
+                                            }
+                                        }
+                                        const dx = clientX - (minLeft + maxRight) / 2;
+                                        const dy = clientY - (minTop + maxBottom) / 2;
+                                        const distance = dx * dx + dy * dy;
+                                        if (!best || distance < best.distance) {
+                                            best = { ...info, x: ox, y: oy, distance };
+                                        }
+                                    }
+                                }
+                            }
+                            if (best) {
+                                const firstRect = best.board[0][0].getBoundingClientRect();
+                                const nextXRect = best.board[0][1].getBoundingClientRect();
+                                const nextYRect = best.board[1][0].getBoundingClientRect();
+                                dialog.dragNode.style.left = (firstRect.left + best.x * (nextXRect.left - firstRect.left)) / zoom + "px";
+                                dialog.dragNode.style.top = (firstRect.top + best.y * (nextYRect.top - firstRect.top)) / zoom + "px";
+                                dialog.dragNode.style.opacity = "0.95";
+                                dialog.dragNode.style.filter = "drop-shadow(0 0 6px #ffd700)";
+                                dialog.dragSide = best.side;
+                                dialog.dragBoard = best.board;
+                                dialog.dragState = best.state;
+                                dialog.dragX = best.x;
+                                dialog.dragY = best.y;
+                                return;
+                            }
+                            dialog.dragNode.style.left = (clientX / zoom - dialog.dragNode.dragWidth / 2) + "px";
+                            dialog.dragNode.style.top = (clientY / zoom - dialog.dragNode.dragHeight / 2) + "px";
+                            dialog.dragNode.style.opacity = "0.7";
+                            dialog.dragNode.style.filter = "";
                         };
                         function getBoardPos(board, clientX, clientY) {
                             const rect = board.node.getBoundingClientRect();
