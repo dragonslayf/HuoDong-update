@@ -40697,6 +40697,42 @@ const packs = function () {
                         dialog.leftState = save.leftState;
                         dialog.rightState = save.rightState;
                         dialog.inventoryData = save.inventory;
+                        // 旧版本只保存了格子的占用状态，无法知道每个实体方块的边界。
+                        // 热更新后将旧占用格迁移成单格实体；新放置的方块会保存完整形状，
+                        // 从而在之后再次打开小游戏时也能整块拖动。
+                        if (!Array.isArray(save.placements)) {
+                            save.placements = [];
+                            [["left", save.leftState], ["right", save.rightState]].forEach(([side, state]) => {
+                                for (let y = 0; y < 4; y++) {
+                                    for (let x = 0; x < 4; x++) {
+                                        if (!state[y][x]) continue;
+                                        save.placements.push({
+                                            id: get.id(),
+                                            side,
+                                            x,
+                                            y,
+                                            piece: {
+                                                id: get.id(),
+                                                level: 1,
+                                                rotate: 0,
+                                                shape: [[1]],
+                                                count: 1,
+                                            },
+                                        });
+                                    }
+                                }
+                            });
+                        }
+                        dialog.placements = save.placements;
+                        dialog.initialLeftState = save.leftState.map(row => row.slice());
+                        dialog.initialRightState = save.rightState.map(row => row.slice());
+                        dialog.initialPlacements = save.placements.map(info => ({
+                            ...info,
+                            piece: {
+                                ...info.piece,
+                                shape: info.piece.shape.map(row => row.slice()),
+                            },
+                        }));
                         dialog.currentPieceData = null;
                         dialog.history = [];
                         //dialog拖动
@@ -40733,6 +40769,15 @@ const packs = function () {
                             panel.style.position = "relative";
                         });
                         //棋盘区
+                        function getPlacementAt(side, x, y) {
+                            return dialog.placements.find(info => {
+                                if (info.side !== side) return false;
+                                const shape = info.piece.shape;
+                                const px = x - info.x;
+                                const py = y - info.y;
+                                return py >= 0 && py < shape.length && px >= 0 && px < shape[py].length && !!shape[py][px];
+                            });
+                        };
                         function createBoard(parent, side) {
                             const boardNode = ui.create.div(parent);
                             boardNode.style.display = "flex";
@@ -40760,10 +40805,22 @@ const packs = function () {
                                     cell.style.borderRadius = "4px";
                                     cell.style.boxSizing = "border-box";
                                     cell.style.position = "relative";
+                                    if (lib.config.touchscreen) {
+                                        cell.ontouchstart = function (e) {
+                                            const placement = getPlacementAt(side, x, y);
+                                            if (!placement) return;
+                                            const touch = e.changedTouches[0] || e.touches[0];
+                                            if (!touch) return;
+                                            e.stopPropagation();
+                                            e.preventDefault();
+                                            startPlacedTouchDrag(touch, placement, cell);
+                                        };
+                                    }
                                     board[y][x] = cell;
                                 }
                             }
                             board.node = boardNode;
+                            board.side = side;
                             board.cellSize = 48;
                             board.gap = 4;
                             return board;
@@ -40772,12 +40829,15 @@ const packs = function () {
                             for (let y = 0; y < 4; y++) {
                                 for (let x = 0; x < 4; x++) {
                                     const cell = board[y][x];
+                                    const placement = getPlacementAt(board.side, x, y);
                                     if (state[y][x]) {
                                         cell.style.background = "#4dabff";
                                     }
                                     else {
                                         cell.style.background = "white";
                                     }
+                                    cell.style.cursor = placement ? "grab" : "";
+                                    cell.style.touchAction = placement ? "none" : "";
                                 }
                             }
                         };
@@ -40896,8 +40956,9 @@ const packs = function () {
                             node.style.transition = "none";
                             node.style.animation = "none";
                             if (isTouch) {
-                                // 手机端使用独立的小预览，不再把棋盘格的视口尺寸再次写入 DOM，
-                                // 避免不同 WebView 的页面缩放令方块被二次放大。
+                                // 手机端预览属于小游戏窗口，窗口移动时方块会随窗口一起移动；
+                                // 后续位置全部使用窗口内部坐标，不再使用整屏坐标。
+                                node.style.position = "absolute";
                                 node.dataset.size = 24;
                                 node.dataset.gap = 2;
                                 node.style.left = "0";
@@ -40913,7 +40974,7 @@ const packs = function () {
                                 node.dataset.gap = 4;
                             }
                             renderPiece(piece, node);
-                            (isTouch ? document.documentElement : document.body).appendChild(node);
+                            (isTouch ? dialog : document.body).appendChild(node);
                             const shape = piece.shape;
                             const cellSize = Number(node.dataset.size);
                             const gap = Number(node.dataset.gap) || 2;
@@ -40984,13 +41045,51 @@ const packs = function () {
                             node.touchAnchorRatioX = ratioX;
                             node.touchAnchorRatioY = ratioY;
                         };
-                        function startDrag(e, piece, isTouch = false, sourceNode = e.currentTarget) {
+                        function setPlacedTouchDragAnchor(node, placement, sourceCell, clientX, clientY) {
+                            const rect = sourceCell.getBoundingClientRect();
+                            const shapeX = Number(sourceCell.dataset.x) - placement.x;
+                            const shapeY = Number(sourceCell.dataset.y) - placement.y;
+                            const ratioX = rect.width ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0.5;
+                            const ratioY = rect.height ? Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)) : 0.5;
+                            const cellSize = Number(node.dataset.size);
+                            const gap = Number(node.dataset.gap) || 2;
+                            node.touchAnchorX = shapeX * (cellSize + gap) + ratioX * cellSize;
+                            node.touchAnchorY = shapeY * (cellSize + gap) + ratioY * cellSize;
+                            node.touchAnchorCellX = shapeX;
+                            node.touchAnchorCellY = shapeY;
+                            node.touchAnchorRatioX = ratioX;
+                            node.touchAnchorRatioY = ratioY;
+                        };
+                        function startPlacedTouchDrag(e, placement, sourceCell) {
+                            if (dialog.dragNode) return;
+                            const sourceState = placement.side === "left" ? dialog.leftState : dialog.rightState;
+                            const sourceBoard = placement.side === "left" ? dialog.leftBoard : dialog.rightBoard;
+                            const source = {
+                                side: placement.side,
+                                x: placement.x,
+                                y: placement.y,
+                                state: sourceState,
+                                board: sourceBoard,
+                            };
+                            // 拖起后先释放原占用，方块才能放回原处或与原位置部分重叠。
+                            removePiece(sourceState, placement.piece.shape, placement.x, placement.y);
+                            renderBoard(sourceBoard, sourceState);
+                            startDrag(e, placement.piece, true, sourceCell, placement, source);
+                        };
+                        function startDrag(e, piece, isTouch = false, sourceNode = e.currentTarget, placement = null, placementSource = null) {
                             if (isTouch && dialog.dragNode) return;
-                            dialog.currentPieceData = piece;
-                            refreshInventorySelect();
+                            if (!placement) {
+                                dialog.currentPieceData = piece;
+                                refreshInventorySelect();
+                            }
                             const drag = createDragPiece(piece, isTouch);
-                            if (isTouch) setTouchDragAnchor(drag, piece, sourceNode, e.clientX, e.clientY);
+                            if (isTouch) {
+                                if (placement) setPlacedTouchDragAnchor(drag, placement, sourceNode, e.clientX, e.clientY);
+                                else setTouchDragAnchor(drag, piece, sourceNode, e.clientX, e.clientY);
+                            }
                             dialog.dragNode = drag;
+                            dialog.dragPlacement = placement;
+                            dialog.dragPlacementSource = placementSource;
                             const zoom = game.documentZoom || 1;
                             const rect = sourceNode.getBoundingClientRect();
                             const offsetX = (e.clientX - rect.left) / zoom;
@@ -41047,23 +41146,55 @@ const packs = function () {
                                     animationFrameId = null;
                                 }
                                 clearListeners();
-                                if (isTouch) clearTouchSnapPreview();
-                                if (cancelled !== true && dialog.dragBoard && dialog.dragState && dialog.dragX != null && dialog.dragY != null) {
+                                const canDrop = cancelled !== true && dialog.dragBoard && dialog.dragState && dialog.dragX != null && dialog.dragY != null;
+                                if (canDrop) {
                                     placePiece(dialog.dragState, piece.shape, dialog.dragX, dialog.dragY);
-                                    dialog.currentPlace.push({
-                                        side: dialog.dragSide,
-                                        // 触屏端保存落下时的形状，避免之后旋转同类库存时已放置方块跟着变化
-                                        piece: isTouch ? {
-                                            ...piece,
-                                            shape: piece.shape.map(row => row.slice()),
-                                        } : piece,
-                                        x: dialog.dragX,
-                                        y: dialog.dragY,
-                                    });
-                                    dialog.currentCount++;
-                                    removeInventory(piece);
+                                    if (placement) {
+                                        placement.side = dialog.dragSide;
+                                        placement.x = dialog.dragX;
+                                        placement.y = dialog.dragY;
+                                    }
+                                    else if (isTouch) {
+                                        const placedInfo = {
+                                            id: get.id(),
+                                            side: dialog.dragSide,
+                                            piece: {
+                                                ...piece,
+                                                shape: piece.shape.map(row => row.slice()),
+                                                count: 1,
+                                            },
+                                            x: dialog.dragX,
+                                            y: dialog.dragY,
+                                        };
+                                        dialog.placements.push(placedInfo);
+                                        dialog.currentPlace.push(placedInfo);
+                                        dialog.currentCount++;
+                                        removeInventory(piece);
+                                        renderInventory();
+                                    }
+                                    else {
+                                        dialog.currentPlace.push({
+                                            side: dialog.dragSide,
+                                            piece,
+                                            x: dialog.dragX,
+                                            y: dialog.dragY,
+                                        });
+                                        dialog.currentCount++;
+                                        removeInventory(piece);
+                                        renderInventory();
+                                    }
+                                }
+                                else if (placement && placementSource) {
+                                    placePiece(placementSource.state, piece.shape, placementSource.x, placementSource.y);
+                                }
+                                if (isTouch) {
+                                    renderBoard(dialog.leftBoard, dialog.leftState);
+                                    renderBoard(dialog.rightBoard, dialog.rightState);
+                                }
+                                else if (canDrop) {
                                     renderBoard(dialog.dragBoard, dialog.dragState);
-                                    renderInventory();
+                                }
+                                if (canDrop || placement) {
                                     refreshWeight();
                                 }
                                 if (dialog.dragNode) {
@@ -41075,6 +41206,8 @@ const packs = function () {
                                 dialog.dragState = null;
                                 dialog.dragX = null;
                                 dialog.dragY = null;
+                                dialog.dragPlacement = null;
+                                dialog.dragPlacementSource = null;
                             };
                             function touchEnd(e) {
                                 const touch = getTouch(e.changedTouches);
@@ -41209,55 +41342,30 @@ const packs = function () {
                             dialog.dragX = best.x;
                             dialog.dragY = best.y;
                         };
-                        function clearTouchSnapPreview() {
-                            if (!dialog.touchPreviewCells?.length) return;
-                            for (const info of dialog.touchPreviewCells) {
-                                info.cell.style.background = info.background;
-                                info.cell.style.boxShadow = info.boxShadow;
-                                info.cell.style.opacity = info.opacity;
-                                info.cell.style.transition = info.transition;
-                            }
-                            dialog.touchPreviewCells = [];
+                        function getDialogLocalPoint(clientX, clientY) {
+                            const rect = dialog.getBoundingClientRect();
+                            const layoutWidth = dialog.offsetWidth || rect.width || 1;
+                            const layoutHeight = dialog.offsetHeight || rect.height || 1;
+                            return {
+                                x: (clientX - rect.left) * layoutWidth / (rect.width || layoutWidth),
+                                y: (clientY - rect.top) * layoutHeight / (rect.height || layoutHeight),
+                            };
                         };
-                        function showTouchSnapPreview(best, piece) {
-                            const cells = [];
-                            for (let py = 0; py < piece.shape.length; py++) {
-                                for (let px = 0; px < piece.shape[py].length; px++) {
-                                    if (!piece.shape[py][px]) continue;
-                                    const cell = best.board[best.y + py][best.x + px];
-                                    cells.push({
-                                        cell,
-                                        background: cell.style.background,
-                                        boxShadow: cell.style.boxShadow,
-                                        opacity: cell.style.opacity,
-                                        transition: cell.style.transition,
-                                    });
-                                    cell.style.transition = "none";
-                                    cell.style.background = "#4dabff";
-                                    cell.style.boxShadow = "inset 0 0 0 3px #ffd700";
-                                    cell.style.opacity = "0.9";
-                                }
-                            }
-                            dialog.touchPreviewCells = cells;
-                        };
-                        function setTouchDragCenter(clientX, clientY) {
+                        function setTouchDragPosition(clientX, clientY) {
                             const node = dialog.dragNode;
                             if (!node) return;
                             const anchorX = node.touchAnchorX ?? node.touchCenterX;
                             const anchorY = node.touchAnchorY ?? node.touchCenterY;
-                            let translateX = clientX - anchorX;
-                            let translateY = clientY - anchorY;
-                            node.style.transform = `translate3d(${translateX}px, ${translateY}px, 0)`;
-                            // 某些手机 WebView 仍会给 html 根节点附加页面缩放或视口偏移。
-                            // 根据实际渲染结果反向校正一次，而不是假定某个缩放值。
-                            const rect = node.getBoundingClientRect();
-                            const scaleX = rect.width && node.dragWidth ? rect.width / node.dragWidth : 1;
-                            const scaleY = rect.height && node.dragHeight ? rect.height / node.dragHeight : 1;
-                            const renderedAnchorX = rect.left + anchorX * scaleX;
-                            const renderedAnchorY = rect.top + anchorY * scaleY;
-                            translateX += (clientX - renderedAnchorX) / scaleX;
-                            translateY += (clientY - renderedAnchorY) / scaleY;
-                            node.style.transform = `translate3d(${translateX}px, ${translateY}px, 0)`;
+                            const point = getDialogLocalPoint(clientX, clientY);
+                            node.style.transform = `translate3d(${point.x - anchorX}px, ${point.y - anchorY}px, 0)`;
+                        };
+                        function getTouchBoardCell(clientX, clientY) {
+                            let node = document.elementFromPoint(clientX, clientY);
+                            while (node && node !== dialog) {
+                                if (node.dataset?.side && node.dataset.x != null && node.dataset.y != null) return node;
+                                node = node.parentElement;
+                            }
+                            return null;
                         };
                         function updateTouchDragPosition(piece, clientX, clientY) {
                             dialog.dragSide = null;
@@ -41266,100 +41374,43 @@ const packs = function () {
                             dialog.dragX = null;
                             dialog.dragY = null;
                             if (!dialog.dragNode) return;
-                            clearTouchSnapPreview();
-                            dialog.dragNode.style.visibility = "visible";
-                            const boards = [
-                                { board: dialog.leftBoard, state: dialog.leftState, side: "left" },
-                                { board: dialog.rightBoard, state: dialog.rightState, side: "right" },
-                            ];
-                            let best = null;
-                            for (const info of boards) {
-                                const boardRect = info.board.node.getBoundingClientRect();
-                                const cellRect = info.board[0][0].getBoundingClientRect();
-                                const snapMargin = Math.max(cellRect.width, cellRect.height) * 0.9;
-                                if (clientX < boardRect.left - snapMargin || clientX > boardRect.right + snapMargin || clientY < boardRect.top - snapMargin || clientY > boardRect.bottom + snapMargin) continue;
-                                const shapeWidth = Math.max(...piece.shape.map(row => row.length));
-                                for (let oy = 1 - piece.shape.length; oy < 4; oy++) {
-                                    for (let ox = 1 - shapeWidth; ox < 4; ox++) {
-                                        if (!canPlace(info.state, piece.shape, ox, oy)) continue;
-                                        let centerX = 0, centerY = 0, count = 0;
-                                        const dragNode = dialog.dragNode;
-                                        if (dragNode.touchAnchorCellX != null && dragNode.touchAnchorCellY != null) {
-                                            const cell = info.board[oy + dragNode.touchAnchorCellY][ox + dragNode.touchAnchorCellX].getBoundingClientRect();
-                                            centerX = cell.left + cell.width * dragNode.touchAnchorRatioX;
-                                            centerY = cell.top + cell.height * dragNode.touchAnchorRatioY;
-                                            count = 1;
-                                        }
-                                        else {
-                                            for (let py = 0; py < piece.shape.length; py++) {
-                                                for (let px = 0; px < piece.shape[py].length; px++) {
-                                                    if (!piece.shape[py][px]) continue;
-                                                    const cell = info.board[oy + py][ox + px].getBoundingClientRect();
-                                                    centerX += (cell.left + cell.right) / 2;
-                                                    centerY += (cell.top + cell.bottom) / 2;
-                                                    count++;
-                                                }
-                                            }
-                                        }
-                                        const dx = clientX - centerX / count;
-                                        const dy = clientY - centerY / count;
-                                        const distance = dx * dx + dy * dy;
-                                        if (!best || distance < best.distance) {
-                                            best = { ...info, x: ox, y: oy, distance };
-                                        }
+                            setTouchDragPosition(clientX, clientY);
+                            const cell = getTouchBoardCell(clientX, clientY);
+                            if (!cell) {
+                                dialog.dragNode.style.opacity = "0.7";
+                                dialog.dragNode.style.filter = "";
+                                return;
+                            }
+                            let anchorX = dialog.dragNode.touchAnchorCellX;
+                            let anchorY = dialog.dragNode.touchAnchorCellY;
+                            if (anchorX == null || anchorY == null) {
+                                outer: for (let y = 0; y < piece.shape.length; y++) {
+                                    for (let x = 0; x < piece.shape[y].length; x++) {
+                                        if (!piece.shape[y][x]) continue;
+                                        anchorX = x;
+                                        anchorY = y;
+                                        break outer;
                                     }
                                 }
                             }
-                            if (best) {
-                                // 直接在目标棋盘格上绘制吸附预览，不再用浮层模拟格位坐标；
-                                // 因而预览位置天然与最终写入的逻辑格完全一致。
-                                showTouchSnapPreview(best, piece);
-                                dialog.dragNode.style.visibility = "hidden";
-                                dialog.dragSide = best.side;
-                                dialog.dragBoard = best.board;
-                                dialog.dragState = best.state;
-                                dialog.dragX = best.x;
-                                dialog.dragY = best.y;
+                            const side = cell.dataset.side;
+                            const x = Number(cell.dataset.x) - anchorX;
+                            const y = Number(cell.dataset.y) - anchorY;
+                            const board = side === "left" ? dialog.leftBoard : dialog.rightBoard;
+                            const state = side === "left" ? dialog.leftState : dialog.rightState;
+                            // 不搜索附近空位：只有手指当前压住的格子所对应的原点合法时才允许落下。
+                            if (!canPlace(state, piece.shape, x, y)) {
+                                dialog.dragNode.style.opacity = "0.45";
+                                dialog.dragNode.style.filter = "grayscale(1)";
                                 return;
                             }
-                            setTouchDragCenter(clientX, clientY);
-                            dialog.dragNode.style.opacity = "0.7";
-                            dialog.dragNode.style.filter = "";
-                        };
-                        function getBoardPos(board, clientX, clientY) {
-                            const rect = board.node.getBoundingClientRect();
-                            if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
-                                return null;
-                            }
-                            const cellSize = board[0][0].offsetWidth;
-                            const gap = 4;
-                            const x = Math.floor((clientX - rect.left) / (cellSize + gap));
-                            const y = Math.floor((clientY - rect.top) / (cellSize + gap));
-                            if (x < 0 || x >= 4 || y < 0 || y >= 4) return null;
-                            return { x, y };
-                        };
-                        function getHoverBoard(clientX, clientY) {
-                            let pos = getBoardPos(dialog.leftBoard, clientX, clientY);
-                            if (pos) {
-                                return {
-                                    board: dialog.leftBoard,
-                                    state: dialog.leftState,
-                                    side: "left",
-                                    x: pos.x,
-                                    y: pos.y,
-                                };
-                            }
-                            pos = getBoardPos(dialog.rightBoard, clientX, clientY);
-                            if (pos) {
-                                return {
-                                    board: dialog.rightBoard,
-                                    state: dialog.rightState,
-                                    side: "right",
-                                    x: pos.x,
-                                    y: pos.y,
-                                };
-                            }
-                            return null;
+                            dialog.dragSide = side;
+                            dialog.dragBoard = board;
+                            dialog.dragState = state;
+                            dialog.dragX = x;
+                            dialog.dragY = y;
+                            dialog.dragNode.style.opacity = "0.9";
+                            dialog.dragNode.style.filter = "drop-shadow(0 0 4px #ffd700)";
                         };
                         dialog.leftBoard = createBoard(leftPanel, "left");
                         dialog.rightBoard = createBoard(rightPanel, "right");
@@ -41523,6 +41574,7 @@ const packs = function () {
                                         dialog.rightState[y][x] = 0;
                                     }
                                 }
+                                save.placements.length = 0;
                                 renderBoard(dialog.leftBoard, dialog.leftState);
                                 renderBoard(dialog.rightBoard, dialog.rightState);
                             }
@@ -41540,8 +41592,6 @@ const packs = function () {
                         event.switchToAuto = function () {
                             dialog.style.display = "none";
                             dialog.currentPlace.forEach(info => {
-                                const state = info.side == "left" ? dialog.leftState : dialog.rightState;
-                                removePiece(state, info.piece.shape, info.x, info.y);
                                 let old = dialog.inventoryData.find(i => i.id == info.piece.id);
                                 if (old) {
                                     old.count++;
@@ -41552,6 +41602,20 @@ const packs = function () {
                                     });
                                 }
                             });
+                            for (let y = 0; y < 4; y++) {
+                                for (let x = 0; x < 4; x++) {
+                                    dialog.leftState[y][x] = dialog.initialLeftState[y][x];
+                                    dialog.rightState[y][x] = dialog.initialRightState[y][x];
+                                }
+                            }
+                            save.placements.splice(0, save.placements.length, ...dialog.initialPlacements.map(info => ({
+                                ...info,
+                                piece: {
+                                    ...info.piece,
+                                    shape: info.piece.shape.map(row => row.slice()),
+                                },
+                            })));
+                            dialog.placements = save.placements;
                             renderBoard(dialog.leftBoard, dialog.leftState);
                             renderBoard(dialog.rightBoard, dialog.rightState);
                             renderInventory();
@@ -41739,6 +41803,7 @@ const packs = function () {
                                         leftState: Array.from({ length: 4 }, () => Array(4).fill(0)),
                                         rightState: Array.from({ length: 4 }, () => Array(4).fill(0)),
                                         inventory: [],
+                                        placements: [],
                                     };
                                 }
                                 const { PiecePool, sameShape } = lib.skill.mininianquanheng;
