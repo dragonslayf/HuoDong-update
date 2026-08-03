@@ -502,7 +502,7 @@ const packs = function () {
             Mbaby_shen_ganning: ['male', 'shen', '3/6', ['minipoxi', 'drlt_jieying'], ['wu']],
             Mbaby_shen_dianwei: ['male', 'shen', 5, ['minishenwei', 'minielai', 'minikuangxi'], ['wei']],
             Mbaby_shen_huatuo: ['male', 'shen', 1, ['minijishi', 'minitaoxian', 'minishenzhen'], ['qun']],
-            Mbaby_shen_guojia: ['male', 'shen', 3, ['reshuishi', 'minigjtianyi', 'minihuishi'], ['wei']],
+            Mbaby_shen_guojia: ['male', 'shen', 3, ['minigjhuishi', 'minigjtianyi', 'minihuishi'], ['wei']],
             Mbaby_shen_zhenji: ['female', 'shen', 3, ['minishenfu', 'minireqixian', 'minifeifu'], ['wei']],
             Mbaby_shen_daxiaoqiao: {
                 sex: 'female',
@@ -34190,6 +34190,47 @@ const packs = function () {
                     combo: 'minijishi',
                 },
             },
+            minigjhuishi: {
+                audio: 'shuishi',
+                enable: 'phaseUse',
+                usable: 1,
+                filter(event, player) {
+                    return player.maxHp < 10;
+                },
+                async content(event, trigger, player) {
+                    const cards = get.cards(5);
+                    if (!cards.length) return;
+                    await game.cardsGotoOrdering(cards);
+                    await player.showCards(cards, get.translation(player) + '发动了【慧识】');
+                    const suits = [];
+                    for (const card of cards) {
+                        const suit = get.suit(card, false);
+                        if (lib.suit.includes(suit)) suits.add(suit);
+                    }
+                    const num = Math.min(suits.length, 10 - player.maxHp);
+                    if (num > 0) await player.gainMaxHp(num);
+                    const gains = cards.filterInD();
+                    if (!gains.length) return;
+                    const result = await player.chooseTarget('慧识：是否将' + get.translation(gains) + '交给一名角色？').set('ai', target => {
+                        const { player, num, max } = get.event(), att = get.attitude(player, target);
+                        if (att <= 0) return att;
+                        if (target.countCards('h') + num >= max) return att / 3;
+                        if (target.hasSkillTag('nogain')) return att / 10;
+                        return att;
+                    }).set('num', gains.length).set('max', game.filterPlayer().reduce((num, current) => {
+                        return Math.max(num, current.countCards('h'));
+                    }, 0)).forResult();
+                    if (!result?.bool || !result.targets?.length) return;
+                    const target = result.targets[0];
+                    player.line(target, 'green');
+                    await target.gain(gains, 'gain2').set('giver', player);
+                    if (target.isMaxHandcard()) await player.loseMaxHp();
+                },
+                ai: {
+                    order: 9,
+                    result: { player: 1 },
+                },
+            },
             minigjtianyi: {
                 audio: 'stianyi',
                 derivation: 'minizuoxing',
@@ -34223,73 +34264,60 @@ const packs = function () {
             },
             minizuoxing: {
                 audio: 'zuoxing',
-                trigger: { player: 'phaseUseBegin' },
+                enable: 'phaseUse',
                 filter(event, player) {
-                    var target = player.storage.minizuoxing;
-                    return player.hasSkill('minizuoxing') && target && target.isIn() && target.maxHp > 1;
+                    const target = player.storage.minizuoxing;
+                    if (!target || !target.isIn() || target.maxHp <= 1) return false;
+                    const used = player.getStorage('minizuoxing_used');
+                    return lib.inpile.some(name => {
+                        return get.type(name) == 'trick' && !used.includes(name) && event.filterCard({ name, isCard: true }, player, event);
+                    });
                 },
-                check(event, player) {
-                    var target = player.storage.minizuoxing;
-                    if (get.attitude(player, target) <= 0) return true;
-                    return target.maxHp > 3 && !player.hasJudge('lebu');
-                },
-                prompt(event, player) {
-                    return get.prompt('minizuoxing') + '（令' + get.translation(player.storage.minizuoxing) + '减少1点体力上限，' + get.translation(player.storage.minizuoxing) + '当前体力上限：' + player.storage.minizuoxing.maxHp + '）';
-                },
-                content() {
-                    player.line(player.storage.minizuoxing, 'fire');
-                    player.storage.minizuoxing.loseMaxHp();
-                    player.addTempSkill('minizuoxing_effect');
+                chooseButton: {
+                    dialog(event, player) {
+                        const used = player.getStorage('minizuoxing_used'), list = [];
+                        for (const name of lib.inpile) {
+                            if (get.type(name) == 'trick' && !used.includes(name) && event.filterCard({ name, isCard: true }, player, event)) {
+                                list.push(['锦囊', '', name]);
+                            }
+                        }
+                        return ui.create.dialog('佐幸', [list, 'vcard']);
+                    },
+                    check(button) {
+                        return get.player().getUseValue({ name: button.link[2], isCard: true });
+                    },
+                    backup(links, player) {
+                        const name = links[0][2];
+                        return {
+                            audio: 'zuoxing',
+                            viewAs: { name, isCard: true },
+                            filterCard: () => false,
+                            selectCard: -1,
+                            popname: true,
+                            log: false,
+                            async precontent(event, trigger, player) {
+                                const target = player.storage.minizuoxing;
+                                player.logSkill('minizuoxing', target);
+                                await target.loseMaxHp();
+                                player.addTempSkill('minizuoxing_used', 'phaseAfter');
+                                player.markAuto('minizuoxing_used', [event.result.card.name]);
+                            },
+                        };
+                    },
+                    prompt(links, player) {
+                        return '请选择' + get.translation(links[0][2]) + '的目标';
+                    },
                 },
                 subSkill: {
-                    effect: {
+                    used: {
                         charlotte: true,
-                        audio: 'zuoxing',
-                        enable: 'phaseUse',
-                        filter(event, player) {
-                            if (player.hasSkill('minizuoxing_used', null, null, false)) return false;
-                            for (var i of lib.inpile) {
-                                if (get.type(i) == 'trick' && event.filterCard({ name: i, isCard: true }, player, event)) return true;
-                            }
-                            return false;
-                        },
-                        chooseButton: {
-                            dialog(event, player) {
-                                var list = [];
-                                for (var i of lib.inpile) {
-                                    if (get.type(i) == 'trick' && event.filterCard({ name: i, isCard: true }, player, event)) list.push(['锦囊', '', i]);
-                                }
-                                return ui.create.dialog('佐幸', [list, 'vcard']);
-                            },
-                            check(button) {
-                                return _status.event.player.getUseValue({ name: button.link[2], isCard: true });
-                            },
-                            backup(links, player) {
-                                return {
-                                    audio: 'zuoxing',
-                                    viewAs: {
-                                        name: links[0][2],
-                                        isCard: true,
-                                    },
-                                    filterCard: () => false,
-                                    selectCard: -1,
-                                    popname: true,
-                                    precontent() {
-                                        player.addTempSkill('minizuoxing_used', 'phaseUseEnd');
-                                    },
-                                }
-                            },
-                            prompt(links, player) {
-                                return '请选择' + get.translation(links[0][2]) + '的目标';
-                            },
-                        },
-                        ai: {
-                            order: 1,
-                            result: { player: 1 },
-                        },
+                        onremove: true,
+                        mark: true,
+                        marktext: '佐',
+                        intro: { content: '本回合已通过〖佐幸〗使用过$牌' },
                     },
-                    used: { charlotte: true },
                 },
+                ai: { order: 1, result: { player: 1 } },
             },
             minihuishi: {
                 audio: 'sghuishi',
@@ -34297,65 +34325,51 @@ const packs = function () {
                 limited: true,
                 skillAnimation: true,
                 animationColor: 'water',
+                filter(event, player) {
+                    return player.maxHp > 2;
+                },
                 filterTarget: true,
-                selectTarget() {
-                    var player = _status.event.player;
-                    for (var target of game.filterPlayer()) {
-                        var list = target.getSkills(null, false, false).filter(function (skill) {
-                            if (target.awakenedSkills.includes(skill)) return false;
-                            return lib.skill[skill]?.juexingji;
-                        });
-                        var bool1 = (!list.length && player.maxHp >= 3);
-                        var bool2 = (list.length && player.maxHp >= game.players.length);
-                        target.prompt((bool1 ? '可摸牌' : '') + ((bool1 && bool2) ? '<br>' : '') + (bool2 ? '可觉醒' : ''));
-                    }
-                    return 1;
-                },
-                content() {
-                    'step 0'
-                    player.awakenSkill('minihuishi');
-                    var list = target.getSkills(null, false, false).filter(function (skill) {
-                        if (target.awakenedSkills.includes(skill)) return false;
-                        return lib.skill[skill]?.juexingji;
+                async content(event, trigger, player) {
+                    const { target } = event;
+                    player.awakenSkill(event.name);
+                    await player.loseMaxHp(2);
+                    await target.draw(4);
+                    const list = target.getSkills(null, false, false).filter(skill => {
+                        return get.info(skill)?.juexingji && !target.awakenedSkills.includes(skill);
                     });
-                    if (!list.length && player.maxHp >= 3) {
-                        target.draw(4);
-                        event.goto(2);
-                        return;
-                    }
-                    if (list.length && player.maxHp >= game.players.length) {
-                        if (list.length == 1) event._result = { control: list[0] };
-                        else player.chooseControl(list).set('prompt', '选择一个觉醒技，令' + get.translation(target) + '可无视条件发动该技能');
-                    }
-                    else event.goto(2);
-                    'step 1'
-                    target.storage.minihuishi_mark = result.control;
+                    if (!list.length) return;
+                    const storage = target.getStorage('minihuishi_mark');
+                    target.storage.minihuishi_mark = Array.isArray(storage) ? storage.slice() : storage ? [storage] : [];
+                    target.storage.minihuishi_mark.addArray(list);
                     target.markSkill('minihuishi_mark');
-                    var info = lib.skill[result.control];
-                    if (info.filter && !info.charlotte && !info.minihuishi_filter) {
-                        info.minihuishi_filter = info.filter;
-                        info.filter = function (event, player) {
-                            if (player.storage.minihuishi_mark) return true;
-                            return this.minihuishi_filter.apply(this, arguments);
-                        };
+                    for (const skill of list) {
+                        const info = get.info(skill);
+                        if (info.filter && !info.charlotte && !info.minihuishi_filter) {
+                            info.minihuishi_filter = info.filter;
+                            info.filter = function (event, player, ...args) {
+                                if (player.getStorage('minihuishi_mark').includes(skill)) return true;
+                                return info.minihuishi_filter(event, player, ...args);
+                            };
+                        }
                     }
-                    'step 2'
-                    player.loseMaxHp(2);
                 },
-                subSkill: { mark: { intro: { content: '发动【$】时无视条件' } } },
+                subSkill: {
+                    mark: {
+                        charlotte: true,
+                        intro: { content: '以下觉醒技视为满足觉醒条件：$' },
+                    },
+                },
                 ai: {
                     order: 0.1,
                     expose: 0.2,
                     result: {
                         target(player, target) {
-                            if (player.maxHp < 5) return 0;
-                            var list = target.getSkills(null, false, false).filter(function (skill) {
-                                return lib.skill[skill]?.juexingji;
+                            const list = target.getSkills(null, false, false).filter(skill => {
+                                return get.info(skill)?.juexingji && !target.awakenedSkills.includes(skill);
                             });
-                            if (list.length && player.maxHp >= game.players.length) return 10 * list.length;
-                            if (target.hasJudge('lebu') || target.hasSkillTag('nogain')) return 0;
-                            if (!list.length && player.maxHp >= 3) return 4;
-                            return 0;
+                            if (list.length) return 4 + 6 * list.length;
+                            if (target.hasSkillTag('nogain')) return 0;
+                            return 4;
                         },
                     },
                 },
@@ -40643,730 +40657,189 @@ const packs = function () {
                 async content(event, trigger, player) {
                     player.addTempSkill(`${event.name}_used`);
                     await Promise.all(event.next);
-                    if (player.isUnderControl()) game.swapPlayerAuto(player);
-                    //AI直接走结果
-                    const switchToAuto = function () {
-                        return new Promise((resolve) => {
-                            game.resume();
-                            _status.imchoosing = false;
-                            event._result = { bool: false };
-                            resolve(event._result);
-                            const dialog = event.dialog;
-                            if (dialog) dialog[dialog.close ? 'close' : 'remove']();
-                            game.resume();
-                        });
-                    };
-                    //联机时间限制修改
-                    const originalTimeout = lib.configOL.choose_timeout;
-                    game.broadcastAll((player) => {
-                        if (_status.connectMode) lib.configOL.choose_timeout = '30';
-                        if (game.me !== player) {
-                            const dialog = _status.event.dialog = ui.create.dialog(`${get.translation(player)}正在进行“权衡”...`);
-                            dialog.open();
+                    // 自动选择最优配平结果，不再打开俄罗斯方块小游戏。
+                    const autoBalance = function (player) {
+                        const save = _status.mininianquanheng?.[player.playerid];
+                        if (!save || !Array.isArray(save.inventory) || !save.inventory.length) {
+                            return { bool: false };
                         }
-                    }, player);
-                    const 俄罗的俄罗斯方块 = function (player) {
-                        const event = _status.event, { promise, resolve } = Promise.withResolvers();
-                        //创建dialog
-                        const dialog = event.dialog = ui.create.div(".bolBalance.dialog", ui.window);
-                        Object.setPrototypeOf(dialog, lib.element.dialog);
-                        dialog.ontouchstart = ui.click.dragtouchdialog;
-                        dialog.leftState = Array.from({ length: 4 }, () => Array(4).fill(0));
-                        dialog.rightState = Array.from({ length: 4 }, () => Array(4).fill(0));
-                        dialog.inventoryData = [];
-                        dialog.history = [];
-                        dialog.currentPlace = [];
-                        dialog.currentCount = 0;
-                        dialog.style.position = "absolute";
-                        dialog.style.left = "50%";
-                        dialog.style.top = "50%";
-                        dialog.style.transform = "translate(-50%,-50%)";
-                        dialog.style.display = "flex";
-                        dialog.style.flexDirection = "column";
-                        dialog.style.alignItems = "center";
-                        dialog.style.gap = "12px";
-                        dialog.style.padding = "12px";
-                        dialog.style.background = "rgba(0,0,0,.75)";
-                        dialog.style.borderRadius = "10px";
-                        dialog.style.userSelect = "none";
-                        dialog.style.width = "fit-content";
-                        dialog.style.height = "fit-content";
-                        //dialog引用
-                        let save = _status.mininianquanheng[player.playerid];
-                        dialog.save = save;
-                        dialog.leftState = save.leftState;
-                        dialog.rightState = save.rightState;
-                        dialog.inventoryData = save.inventory;
-                        dialog.currentPieceData = null;
-                        dialog.history = [];
-                        //dialog拖动
-                        dialog.dragNode = null;
-                        dialog.dragSide = null;
-                        dialog.dragX = 0;
-                        dialog.dragY = 0;
-                        dialog.dragBoard = null;
-                        dialog.dragState = null;
-                        //主体
-                        const main = ui.create.div(dialog);
-                        main.style.display = "flex";
-                        main.style.flexDirection = "row";
-                        main.style.alignItems = "center";
-                        main.style.justifyContent = "center";
-                        main.style.gap = "24px";
-                        main.style.position = "relative";
-                        dialog.main = main;
-                        const leftPanel = ui.create.div(main);
-                        leftPanel.style.gap = "10px";
-                        leftPanel.style.width = "280px";
-                        dialog.leftPanel = leftPanel;
-                        const controlPanel = ui.create.div(main);
-                        controlPanel.style.width = "180px";
-                        dialog.controlPanel = controlPanel;
-                        const rightPanel = ui.create.div(main);
-                        rightPanel.style.gap = "10px";
-                        rightPanel.style.width = "280px";
-                        dialog.rightPanel = rightPanel;
-                        [leftPanel, controlPanel, rightPanel].forEach(panel => {
-                            panel.style.display = "flex";
-                            panel.style.flexDirection = "column";
-                            panel.style.alignItems = "center";
-                            panel.style.position = "relative";
+                        const normalizeBoard = state => Array.from({ length: 4 }, (_, y) =>
+                            Array.from({ length: 4 }, (_, x) => state?.[y]?.[x] ? 1 : 0)
+                        );
+                        const countBoard = state => state.reduce((sum, row) =>
+                            sum + row.reduce((rowSum, value) => rowSum + (value ? 1 : 0), 0), 0
+                        );
+                        const fillBoard = (state, count) => {
+                            for (let y = 0; y < 4 && count > 0; y++) {
+                                for (let x = 0; x < 4 && count > 0; x++) {
+                                    if (state[y][x]) continue;
+                                    state[y][x] = 1;
+                                    count--;
+                                }
+                            }
+                        };
+                        const leftState = normalizeBoard(save.leftState);
+                        const rightState = normalizeBoard(save.rightState);
+                        const leftCount = countBoard(leftState);
+                        const rightCount = countBoard(rightState);
+                        const leftCapacity = 16 - leftCount;
+                        const rightCapacity = 16 - rightCount;
+                        const maxUsefulPieces = leftCapacity + rightCapacity;
+                        if (maxUsefulPieces <= 0) return { bool: false };
+
+                        // 每个积木至多使用一次；原小游戏允许逐级降级，因此等级为 level
+                        // 的积木可以贡献 1...level 个单位格。每组保留至多 32 份即可，
+                        // 因为两个 4×4 天平最多只可能再放入 32 件积木。
+                        const pieces = [];
+                        save.inventory.forEach((item, inventoryIndex) => {
+                            const level = Math.max(1, Math.min(4, Number(item.level) || 1));
+                            const count = Math.max(0, Math.floor(Number(item.count) || 0));
+                            for (let i = 0; i < Math.min(count, maxUsefulPieces); i++) {
+                                pieces.push({ inventoryIndex, level });
+                            }
                         });
-                        //棋盘区
-                        function createBoard(parent, side) {
-                            const boardNode = ui.create.div(parent);
-                            boardNode.style.display = "flex";
-                            boardNode.style.flexDirection = "column";
-                            boardNode.style.gap = "4px";
-                            boardNode.style.padding = "8px";
-                            boardNode.style.background = "#999";
-                            boardNode.style.borderRadius = "8px";
-                            boardNode.style.position = "relative";
-                            const board = [];
-                            for (let y = 0; y < 4; y++) {
-                                const row = ui.create.div(boardNode);
-                                row.style.display = "flex";
-                                row.style.gap = "4px";
-                                row.style.position = "relative";
-                                board[y] = [];
-                                for (let x = 0; x < 4; x++) {
-                                    const cell = ui.create.div(row);
-                                    cell.dataset.x = x;
-                                    cell.dataset.y = y;
-                                    cell.dataset.side = side;
-                                    cell.style.width = "48px";
-                                    cell.style.height = "48px";
-                                    cell.style.background = "white";
-                                    cell.style.borderRadius = "4px";
-                                    cell.style.boxSizing = "border-box";
-                                    cell.style.position = "relative";
-                                    board[y][x] = cell;
-                                }
-                            }
-                            board.node = boardNode;
-                            board.cellSize = 48;
-                            board.gap = 4;
-                            return board;
+                        pieces.sort((a, b) => b.level - a.level);
+                        if (!pieces.length) return { bool: false };
+
+                        // dp[left][right] 保存达到对应新增格数时的最佳消耗方案。
+                        // 相同新增格数下优先少用积木，再优先减少降级损耗。
+                        let dp = Array.from({ length: leftCapacity + 1 }, () =>
+                            Array(rightCapacity + 1).fill(null)
+                        );
+                        dp[0][0] = { used: 0, waste: 0, actions: [] };
+                        const better = (candidate, current) => {
+                            if (!current) return true;
+                            if (candidate.used !== current.used) return candidate.used < current.used;
+                            return candidate.waste < current.waste;
                         };
-                        function renderBoard(board, state) {
-                            for (let y = 0; y < 4; y++) {
-                                for (let x = 0; x < 4; x++) {
-                                    const cell = board[y][x];
-                                    if (state[y][x]) {
-                                        cell.style.background = "#4dabff";
-                                    }
-                                    else {
-                                        cell.style.background = "white";
-                                    }
-                                }
-                            }
-                        };
-                        function renderPiece(piece, parent) {
-                            parent.innerHTML = "";
-                            if (!piece) return;
-                            const box = ui.create.div(parent);
-                            box.style.pointerEvents = "none";
-                            box.style.position = "relative";
-                            box.style.display = "flex";
-                            box.style.flexDirection = "column";
-                            const gap = Number(parent.dataset.gap || 2);
-                            box.style.gap = gap + "px";
-                            box.style.width = "fit-content";
-                            const shape = piece.shape;
-                            for (let y = 0; y < shape.length; y++) {
-                                const row = ui.create.div(box);
-                                row.style.position = "relative";
-                                row.style.display = "flex";
-                                row.style.gap = gap + "px";
-                                for (let x = 0; x < shape[y].length; x++) {
-                                    const cell = ui.create.div(row);
-                                    cell.style.position = "relative";
-                                    const size = Number(parent.dataset.size || 24);
-                                    cell.style.width = size + "px";
-                                    cell.style.height = size + "px";
-                                    cell.style.borderRadius = "4px";
-                                    cell.style.boxSizing = "border-box";
-                                    if (shape[y][x]) {
-                                        cell.style.background = "#4dabff";
-                                    }
-                                    else {
-                                        cell.style.visibility = "hidden";
+                        for (const piece of pieces) {
+                            const next = dp.map(row => row.slice());
+                            for (let left = 0; left <= leftCapacity; left++) {
+                                for (let right = 0; right <= rightCapacity; right++) {
+                                    const state = dp[left][right];
+                                    if (!state) continue;
+                                    for (let amount = 1; amount <= piece.level; amount++) {
+                                        if (left + amount <= leftCapacity) {
+                                            const candidate = {
+                                                used: state.used + 1,
+                                                waste: state.waste + piece.level - amount,
+                                                actions: state.actions.concat({
+                                                    inventoryIndex: piece.inventoryIndex,
+                                                    side: 'left',
+                                                    amount,
+                                                }),
+                                            };
+                                            if (better(candidate, next[left + amount][right])) {
+                                                next[left + amount][right] = candidate;
+                                            }
+                                        }
+                                        if (right + amount <= rightCapacity) {
+                                            const candidate = {
+                                                used: state.used + 1,
+                                                waste: state.waste + piece.level - amount,
+                                                actions: state.actions.concat({
+                                                    inventoryIndex: piece.inventoryIndex,
+                                                    side: 'right',
+                                                    amount,
+                                                }),
+                                            };
+                                            if (better(candidate, next[left][right + amount])) {
+                                                next[left][right + amount] = candidate;
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        };
-                        function refreshInventorySelect() {
-                            dialog.inventoryData.forEach(piece => {
-                                if (!piece.node) return;
-                                if (piece === dialog.currentPieceData) {
-                                    piece.node.style.outline = "3px solid #ffd700";
-                                    piece.node.style.outlineOffset = "2px";
-                                }
-                                else {
-                                    piece.node.style.outline = "";
-                                    piece.node.style.outlineOffset = "";
-                                }
-                            });
-                            if (dialog.currentPieceData) {
-                                renderPiece(dialog.currentPieceData, dialog.currentPiece);
-                                if (dialog.downButton) {
-                                    const enable = dialog.currentPieceData && dialog.currentPieceData.level > 1;
-                                    dialog.downButton.classList.toggle("disabled", !enable);
-                                    dialog.downButton.style.opacity = enable ? "1" : "0.4";
-                                }
-                            }
-                            else {
-                                dialog.currentPiece.innerHTML = "";
-                            }
-                        };
-                        function renderInventory() {
-                            dialog.inventory.innerHTML = "";
-                            dialog.inventoryData.forEach(piece => {
-                                const item = ui.create.div(dialog.inventory);
-                                item.style.position = "relative";
-                                item.style.width = "72px";
-                                item.style.height = "72px";
-                                item.style.display = "flex";
-                                item.style.justifyContent = "center";
-                                item.style.alignItems = "center";
-                                item.style.borderRadius = "8px";
-                                item.style.background = "rgba(255,255,255,.12)";
-                                item.style.cursor = "pointer";
-                                piece.node = item;
-                                item.piece = piece;
-                                item.dataset.size = 16;
-                                renderPiece(piece, item);
-                                if (lib.config.touchscreen) {
-                                    item.ontouchstart = function (e) {
-                                        e.stopPropagation();
-                                        e.preventDefault();
-                                        const evt = e.touches[0];
-                                        evt.currentTarget = item;
-                                        startDrag(evt, piece);
-                                    };
-                                }
-                                else {
-                                    item.onmousedown = function (e) {
-                                        e.stopPropagation();
-                                        startDrag(e, piece);
-                                    };
-                                }
-                                const num = ui.create.div(item);
-                                num.innerHTML = "×" + piece.count;
-                                num.style.position = "absolute";
-                                num.style.right = "4px";
-                                num.style.bottom = "2px";
-                                num.style.color = "white";
-                                num.style.fontSize = "16px";
-                                num.style.fontWeight = "bold";
-                                num.style.pointerEvents = "none";
-                                num.style.textShadow = "0 0 2px black";
-                            });
-                            if (!dialog.currentPieceData && dialog.inventoryData.length) {
-                                dialog.currentPieceData = dialog.inventoryData[0];
-                            }
-                            refreshInventorySelect();
-                        };
-                        function createDragPiece(piece) {
-                            const node = document.createElement("div");
-                            node.style.position = "fixed";
-                            node.style.pointerEvents = "none";
-                            node.style.zIndex = "99999";
-                            node.style.opacity = "0.7";
-                            node.style.transition = "none";
-                            node.style.animation = "none";
-                            node.dataset.size = 48;
-                            node.dataset.gap = 4;
-                            renderPiece(piece, node);
-                            document.body.appendChild(node);
-                            const shape = piece.shape;
-                            const cellSize = Number(node.dataset.size);
-                            const gap = Number(node.dataset.gap) || 2;
-                            const cols = shape[0].length;
-                            const rows = shape.length;
-                            node.dragWidth = cols * cellSize + (cols - 1) * gap;
-                            node.dragHeight = rows * cellSize + (rows - 1) * gap;
-                            return node;
-                        };
-                        function startDrag(e, piece) {
-                            dialog.currentPieceData = piece;
-                            refreshInventorySelect();
-                            const drag = createDragPiece(piece);
-                            dialog.dragNode = drag;
-                            const zoom = game.documentZoom || 1;
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            const offsetX = (e.clientX - rect.left) / zoom;
-                            const offsetY = (e.clientY - rect.top) / zoom;
-                            let animationFrameId = null;
-                            function move(ev) {
-                                if (animationFrameId) cancelAnimationFrame(animationFrameId);
-                                animationFrameId = requestAnimationFrame(() => {
-                                    drag.style.left = (ev.clientX / zoom - offsetX) + "px";
-                                    drag.style.top = (ev.clientY / zoom - offsetY) + "px";
-                                    updateDragPosition(piece);
-                                });
-                            };
-                            function touchMove(e) {
-                                move(e.touches[0]);
-                                e.preventDefault();
-                            };
-                            move(e);
-                            function end() {
-                                if (animationFrameId) {
-                                    cancelAnimationFrame(animationFrameId);
-                                    animationFrameId = null;
-                                }
-                                if (lib.config.touchscreen) {
-                                    document.removeEventListener("touchmove", touchMove);
-                                    document.removeEventListener("touchend", end);
-                                }
-                                else {
-                                    document.removeEventListener("mousemove", move);
-                                    document.removeEventListener("mouseup", end);
-                                }
-                                if (dialog.dragBoard && dialog.dragState && dialog.dragX != null && dialog.dragY != null) {
-                                    placePiece(dialog.dragState, piece.shape, dialog.dragX, dialog.dragY);
-                                    dialog.currentPlace.push({
-                                        side: dialog.dragSide,
-                                        piece: piece,
-                                        x: dialog.dragX,
-                                        y: dialog.dragY,
-                                    });
-                                    dialog.currentCount++;
-                                    removeInventory(piece);
-                                    renderBoard(dialog.dragBoard, dialog.dragState);
-                                    renderInventory();
-                                    refreshWeight();
-                                }
-                                if (dialog.dragNode) {
-                                    dialog.dragNode.remove();
-                                    dialog.dragNode = null;
-                                }
-                                dialog.dragSide = null;
-                                dialog.dragBoard = null;
-                                dialog.dragState = null;
-                                dialog.dragX = null;
-                                dialog.dragY = null;
-                            };
-                            if (lib.config.touchscreen) {
-                                document.addEventListener("touchmove", touchMove, { passive: false });
-                                document.addEventListener("touchend", end);
-                            }
-                            else {
-                                document.addEventListener("mousemove", move);
-                                document.addEventListener("mouseup", end);
-                            }
-                        };
-                        function canPlace(state, shape, ox, oy) {
-                            for (let y = 0; y < shape.length; y++) {
-                                for (let x = 0; x < shape[y].length; x++) {
-                                    if (!shape[y][x]) continue;
-                                    let xx = ox + x;
-                                    let yy = oy + y;
-                                    if (xx < 0 || yy < 0 || xx >= 4 || yy >= 4) return false;
-                                    if (state[yy][xx]) return false;
-                                }
-                            }
-                            return true;
-                        };
-                        function placePiece(state, shape, ox, oy) {
-                            for (let y = 0; y < shape.length; y++) {
-                                for (let x = 0; x < shape[y].length; x++) {
-                                    if (shape[y][x]) {
-                                        state[oy + y][ox + x] = 1;
-                                    }
-                                }
-                            }
-                        };
-                        function removePiece(state, shape, ox, oy) {
-                            for (let y = 0; y < shape.length; y++) {
-                                for (let x = 0; x < shape[y].length; x++) {
-                                    if (shape[y][x]) {
-                                        state[oy + y][ox + x] = 0;
-                                    }
-                                }
-                            }
-                        };
-                        function countWeight(state) {
-                            let weight = 0;
-                            for (let y = 0; y < 4; y++) {
-                                for (let x = 0; x < 4; x++) {
-                                    if (state[y][x]) weight++;
-                                }
-                            }
-                            return weight;
-                        };
-                        function refreshWeight() {
-                            const left = countWeight(dialog.leftState);
-                            const right = countWeight(dialog.rightState);
-                            dialog.leftWeight.innerHTML = "重量：" + left;
-                            dialog.rightWeight.innerHTML = "重量：" + right;
-                            if (left > 0 && left === right) {
-                                dialog.leftWeight.style.color = "#32CD32";
-                                dialog.rightWeight.style.color = "#32CD32";
-                            } else {
-                                dialog.leftWeight.style.color = "#ff6868";
-                                dialog.rightWeight.style.color = "#ff6868";
-                            }
-                            const enable = dialog.currentPlace.length && left == right && left > 0;
-                            dialog.finishButton.classList.toggle("disabled", !enable);
-                            dialog.finishButton.style.opacity = enable ? "1" : "0.4";
-                        };
-                        function updateDragPosition(piece) {
-                            dialog.dragSide = null;
-                            dialog.dragBoard = null;
-                            dialog.dragState = null;
-                            dialog.dragX = null;
-                            dialog.dragY = null;
-                            if (!dialog.dragNode) return;
-                            const zoom = game.documentZoom || 1;
-                            const rect = dialog.dragNode.getBoundingClientRect();
-                            const cellSize = Number(dialog.dragNode.dataset.size);
-                            const gap = Number(dialog.dragNode.dataset.gap || 2);
-                            const voteMap = {};
-                            for (let py = 0; py < piece.shape.length; py++) {
-                                for (let px = 0; px < piece.shape[py].length; px++) {
-                                    if (!piece.shape[py][px]) continue;
-                                    const cx = rect.left + px * (cellSize + gap) + cellSize / 2;
-                                    const cy = rect.top + py * (cellSize + gap) + cellSize / 2;
-                                    const dom = document.elementFromPoint(cx, cy);
-                                    if (!dom?.dataset.side) continue;
-                                    const bx = Number(dom.dataset.x);
-                                    const by = Number(dom.dataset.y);
-                                    const ox = bx - px;
-                                    const oy = by - py;
-                                    const key = dom.dataset.side + "_" + ox + "_" + oy;
-                                    if (!voteMap[key]) {
-                                        voteMap[key] = {
-                                            side: dom.dataset.side,
-                                            x: ox,
-                                            y: oy,
-                                            count: 0,
-                                        };
-                                    }
-                                    voteMap[key].count++;
-                                }
-                            }
-                            let best = null;
-                            Object.values(voteMap).forEach(info => {
-                                const state = info.side == "left" ? dialog.leftState : dialog.rightState;
-                                if (!canPlace(state, piece.shape, info.x, info.y)) return;
-                                if (!best || info.count > best.count) {
-                                    best = info;
-                                }
-                            });
-                            if (!best) return;
-                            dialog.dragSide = best.side;
-                            dialog.dragBoard = best.side == "left" ? dialog.leftBoard : dialog.rightBoard;
-                            dialog.dragState = best.side == "left" ? dialog.leftState : dialog.rightState;
-                            dialog.dragX = best.x;
-                            dialog.dragY = best.y;
-                        };
-                        function getBoardPos(board, clientX, clientY) {
-                            const rect = board.node.getBoundingClientRect();
-                            if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
-                                return null;
-                            }
-                            const cellSize = board[0][0].offsetWidth;
-                            const gap = 4;
-                            const x = Math.floor((clientX - rect.left) / (cellSize + gap));
-                            const y = Math.floor((clientY - rect.top) / (cellSize + gap));
-                            if (x < 0 || x >= 4 || y < 0 || y >= 4) return null;
-                            return { x, y };
-                        };
-                        function getHoverBoard(clientX, clientY) {
-                            let pos = getBoardPos(dialog.leftBoard, clientX, clientY);
-                            if (pos) {
-                                return {
-                                    board: dialog.leftBoard,
-                                    state: dialog.leftState,
-                                    side: "left",
-                                    x: pos.x,
-                                    y: pos.y,
+                            dp = next;
+                        }
+
+                        let best = null;
+                        for (let left = 0; left <= leftCapacity; left++) {
+                            for (let right = 0; right <= rightCapacity; right++) {
+                                const state = dp[left][right];
+                                if (!state || !state.used) continue;
+                                const finalLeft = leftCount + left;
+                                const finalRight = rightCount + right;
+                                if (finalLeft !== finalRight || finalLeft <= 0) continue;
+                                const candidate = {
+                                    left,
+                                    right,
+                                    finalCount: finalLeft,
+                                    ...state,
                                 };
-                            }
-                            pos = getBoardPos(dialog.rightBoard, clientX, clientY);
-                            if (pos) {
-                                return {
-                                    board: dialog.rightBoard,
-                                    state: dialog.rightState,
-                                    side: "right",
-                                    x: pos.x,
-                                    y: pos.y,
-                                };
-                            }
-                            return null;
-                        };
-                        dialog.leftBoard = createBoard(leftPanel, "left");
-                        dialog.rightBoard = createBoard(rightPanel, "right");
-                        renderBoard(dialog.leftBoard, dialog.leftState);
-                        renderBoard(dialog.rightBoard, dialog.rightState);
-                        const leftWeight = ui.create.div(leftPanel);
-                        leftWeight.innerHTML = "重量：0";
-                        leftWeight.style.position = "relative";
-                        leftWeight.style.marginTop = "10px";
-                        leftWeight.style.fontSize = "20px";
-                        leftWeight.style.fontWeight = "bold";
-                        leftWeight.style.color = "#ff6868";
-                        leftWeight.style.textAlign = "center";
-                        dialog.leftWeight = leftWeight;
-                        const rightWeight = ui.create.div(rightPanel);
-                        rightWeight.innerHTML = "重量：0";
-                        rightWeight.style.position = "relative";
-                        rightWeight.style.marginTop = "10px";
-                        rightWeight.style.fontSize = "20px";
-                        rightWeight.style.fontWeight = "bold";
-                        rightWeight.style.color = "#ff6868";
-                        rightWeight.style.textAlign = "center";
-                        dialog.rightWeight = rightWeight;
-                        //中心区
-                        controlPanel.style.position = "relative";
-                        controlPanel.style.display = "flex";
-                        controlPanel.style.flexDirection = "column";
-                        controlPanel.style.alignItems = "center";
-                        controlPanel.style.justifyContent = "flex-start";
-                        controlPanel.style.height = "320px";
-                        const currentTitle = ui.create.div(controlPanel);
-                        currentTitle.innerHTML = "权衡";
-                        currentTitle.style.position = "relative";
-                        currentTitle.style.color = "white";
-                        currentTitle.style.fontSize = "22px";
-                        currentTitle.style.fontWeight = "bold";
-                        currentTitle.style.lineHeight = "1";
-                        currentTitle.style.marginBottom = "12px";
-                        const currentPiece = ui.create.div(controlPanel);
-                        currentPiece.style.position = "relative";
-                        currentPiece.style.display = "flex";
-                        currentPiece.style.justifyContent = "center";
-                        currentPiece.style.alignItems = "center";
-                        currentPiece.style.width = "150px";
-                        currentPiece.style.height = "150px";
-                        currentPiece.style.background = "rgba(255,255,255,.12)";
-                        currentPiece.style.borderRadius = "10px";
-                        currentPiece.style.marginBottom = "16px";
-                        dialog.currentPiece = currentPiece;
-                        const buttonPanel = ui.create.div(controlPanel);
-                        buttonPanel.style.position = "relative";
-                        buttonPanel.style.display = "flex";
-                        buttonPanel.style.flexDirection = "column";
-                        buttonPanel.style.alignItems = "center";
-                        buttonPanel.style.gap = "8px";
-                        buttonPanel.style.width = "100%";
-                        const row1 = ui.create.div(buttonPanel);
-                        row1.style.position = "relative";
-                        row1.style.display = "flex";
-                        row1.style.justifyContent = "center";
-                        row1.style.gap = "8px";
-                        row1.style.width = "100%";
-                        const row2 = ui.create.div(buttonPanel);
-                        row2.style.position = "relative";
-                        row2.style.display = "flex";
-                        row2.style.justifyContent = "center";
-                        row2.style.gap = "8px";
-                        row2.style.width = "100%";
-                        function createButton(text, parent) {
-                            const btn = ui.create.div(parent);
-                            btn.style.position = "relative";
-                            btn.style.display = "flex";
-                            btn.style.justifyContent = "center";
-                            btn.style.alignItems = "center";
-                            btn.style.width = "72px";
-                            btn.style.height = "34px";
-                            btn.style.background = "rgba(255,255,255,.15)";
-                            btn.style.borderRadius = "6px";
-                            btn.style.color = "white";
-                            btn.style.cursor = "pointer";
-                            btn.innerHTML = text;
-                            return btn;
-                        };
-                        function rotateShape(shape) {
-                            const h = shape.length;
-                            const w = shape[0].length;
-                            const result = [];
-                            for (let x = 0; x < w; x++) {
-                                result[x] = [];
-                                for (let y = h - 1; y >= 0; y--) {
-                                    result[x].push(shape[y][x]);
+                                if (
+                                    !best ||
+                                    candidate.finalCount > best.finalCount ||
+                                    candidate.finalCount === best.finalCount && better(candidate, best)
+                                ) {
+                                    best = candidate;
                                 }
                             }
-                            return result;
-                        };
-                        dialog.rotateButton = createButton("旋转", row1);
-                        dialog.rotateButton.listen(function () {
-                            const piece = dialog.currentPieceData;
-                            if (!piece) return;
-                            piece.shape = rotateShape(piece.shape);
-                            renderInventory();
+                        }
+                        if (!best) return { bool: false };
+
+                        const usedCounts = Array(save.inventory.length).fill(0);
+                        for (const action of best.actions) {
+                            usedCounts[action.inventoryIndex]++;
+                            fillBoard(action.side === 'left' ? leftState : rightState, action.amount);
+                        }
+                        save.inventory.forEach((item, index) => {
+                            item.count = Math.max(0, (Number(item.count) || 0) - usedCounts[index]);
                         });
-                        function addInventory(level, count = 1) {
-                            const { PiecePool, sameShape } = lib.skill.mininianquanheng;
-                            const shape = PiecePool[level].randomGet().map(row => row.slice());
-                            const item = save.inventory.find(i => i.level === level && sameShape(i.shape, shape));
-                            if (item) {
-                                item.count += count;
-                                return item;
-                            }
-                            const piece = {
-                                id: get.id(),
-                                level,
-                                rotate: 0,
-                                shape,
-                                count,
-                            };
-                            save.inventory.push(piece);
-                            return piece;
-                        };
-                        function removeInventory(piece, count = 1) {
-                            piece.count -= count;
-                            if (piece.count <= 0) {
-                                save.inventory.remove(piece);
-                                if (dialog.currentPieceData === piece) {
-                                    dialog.currentPieceData = null;
+                        save.inventory = save.inventory.filter(item => item.count > 0);
+                        save.leftState = leftState;
+                        save.rightState = rightState;
+                        // 小游戏已删除，不再维护实体积木的摆放记录。
+                        save.placements = [];
+
+                        const full = best.finalCount === 16;
+                        if (full) {
+                            for (let y = 0; y < 4; y++) {
+                                for (let x = 0; x < 4; x++) {
+                                    save.leftState[y][x] = 0;
+                                    save.rightState[y][x] = 0;
                                 }
                             }
+                            save.placements.length = 0;
+                            player.addTempSkill(`${event.name}_inf`);
+                        }
+                        return {
+                            bool: true,
+                            count: (best.left + best.right) / 2,
+                            all: full || undefined,
                         };
-                        dialog.downButton = createButton("降级", row1);
-                        dialog.downButton.listen(function () {
-                            const piece = dialog.currentPieceData;
-                            if (!piece || piece.level <= 1) return;
-                            removeInventory(piece);
-                            addInventory(piece.level - 1);
-                            renderInventory();
-                            renderPiece(dialog.currentPieceData, dialog.currentPiece);
-                        });
-                        refreshInventorySelect();
-                        dialog.finishButton = createButton("完成", row2);
-                        dialog.finishButton.listen(function () {
-                            const left = countWeight(dialog.leftState);
-                            const right = countWeight(dialog.rightState);
-                            if (!dialog.currentPlace.length || left != right || left == 0) return;
-                            dialog.style.display = "none";
-                            let count = 0;
-                            dialog.currentPlace.forEach(info => {
-                                const shape = info.piece.shape;
-                                for (let y = 0; y < shape.length; y++) {
-                                    for (let x = 0; x < shape[y].length; x++) {
-                                        if (shape[y][x]) count++;
-                                    }
-                                }
-                            });
-                            const full = left == 16 && right == 16;
-                            if (full) {
-                                player.addTempSkill(`${event.name}_inf`);
-                                for (let y = 0; y < 4; y++) {
-                                    for (let x = 0; x < 4; x++) {
-                                        dialog.leftState[y][x] = 0;
-                                        dialog.rightState[y][x] = 0;
-                                    }
-                                }
-                                renderBoard(dialog.leftBoard, dialog.leftState);
-                                renderBoard(dialog.rightBoard, dialog.rightState);
-                            }
-                            game.resume();
-                            _status.imchoosing = false;
-                            event._result = {
-                                bool: true,
-                                count: count / 2,
-                                all: full || undefined,
-                            };
-                            resolve(event._result);
-                        });
-                        refreshWeight();
-                        dialog.cancelButton = createButton("取消", row2);
-                        event.switchToAuto = function () {
-                            dialog.style.display = "none";
-                            dialog.currentPlace.forEach(info => {
-                                const state = info.side == "left" ? dialog.leftState : dialog.rightState;
-                                removePiece(state, info.piece.shape, info.x, info.y);
-                                let old = dialog.inventoryData.find(i => i.id == info.piece.id);
-                                if (old) {
-                                    old.count++;
-                                } else {
-                                    dialog.inventoryData.push({
-                                        ...info.piece,
-                                        count: 1,
-                                    });
-                                }
-                            });
-                            renderBoard(dialog.leftBoard, dialog.leftState);
-                            renderBoard(dialog.rightBoard, dialog.rightState);
-                            renderInventory();
-                            refreshWeight();
-                            dialog.currentPlace = [];
-                            dialog.currentCount = 0;
-                            game.resume();
-                            _status.imchoosing = false;
-                            event._result = { bool: false };
-                            resolve(event._result);
-                        };
-                        dialog.cancelButton.listen(event.switchToAuto);
-                        //积木库存
-                        const inventory = ui.create.div(dialog);
-                        inventory.style.display = "flex";
-                        inventory.style.flexWrap = "wrap";
-                        inventory.style.justifyContent = "center";
-                        inventory.style.alignItems = "center";
-                        inventory.style.gap = "10px";
-                        inventory.style.width = "760px";
-                        inventory.style.minHeight = "90px";
-                        inventory.style.background = "rgba(255,255,255,.08)";
-                        inventory.style.borderRadius = "8px";
-                        inventory.style.padding = "8px";
-                        inventory.style.position = "relative";
-                        dialog.inventory = inventory;
-                        renderInventory();
-                        //位置刷新防止点击dialog位置瞬移
-                        requestAnimationFrame(() => {
-                            const rect = dialog.getBoundingClientRect();
-                            const zoom = game.documentZoom || 1;
-                            dialog.style.transform = "";
-                            dialog.style.left = rect.left / zoom + "px";
-                            dialog.style.top = rect.top / zoom + "px";
-                        });
-                        game.pause();
-                        game.countChoose();
-                        return promise;
                     };
-                    let next;
-                    if (event.isMine()) next = 俄罗的俄罗斯方块(player);
-                    else if (event.isOnline()) {
-                        const { promise, resolve } = Promise.withResolvers();
-                        event.player.send(俄罗的俄罗斯方块, player);
-                        event.player.wait(async result => {
-                            if (result == 'ai') result = await switchToAuto();
-                            resolve(result);
-                        });
-                        game.pause();
-                        next = promise;
+                    const result = autoBalance(player);
+                    if (result?.bool) {
+                        const save = _status.mininianquanheng[player.playerid];
+                        const state = {
+                            leftState: save.leftState.map(row => row.slice()),
+                            rightState: save.rightState.map(row => row.slice()),
+                            inventory: save.inventory.map(item => ({
+                                id: item.id,
+                                level: item.level,
+                                rotate: item.rotate || 0,
+                                shape: Array.isArray(item.shape) ? item.shape.map(row => row.slice()) : [[1]],
+                                count: item.count,
+                            })),
+                            placements: [],
+                        };
+                        // 将自动结算后的持久状态同步到所有客户端。
+                        game.broadcastAll((player, state) => {
+                            _status.mininianquanheng ??= {};
+                            const save = _status.mininianquanheng[player.playerid] ??= {};
+                            save.leftState = state.leftState.map(row => row.slice());
+                            save.rightState = state.rightState.map(row => row.slice());
+                            save.inventory = state.inventory.map(item => ({
+                                id: item.id,
+                                level: item.level,
+                                rotate: item.rotate,
+                                shape: item.shape.map(row => row.slice()),
+                                count: item.count,
+                            }));
+                            save.placements = [];
+                        }, player, state);
                     }
-                    else next = switchToAuto();
-                    const result = await next;
-                    game.resume();
-                    game.broadcastAll((originalTimeout) => {
-                        const dialog = _status.event.dialog;
-                        if (dialog) dialog[dialog.close ? 'close' : 'remove']();
-                        if (_status.connectMode) lib.configOL.choose_timeout = originalTimeout;
-                    }, originalTimeout);
                     if (!result?.bool) {
                         player.chat('杯具');
                         game.log(player, '本次并未配平天平');
@@ -41495,6 +40968,7 @@ const packs = function () {
                                         leftState: Array.from({ length: 4 }, () => Array(4).fill(0)),
                                         rightState: Array.from({ length: 4 }, () => Array(4).fill(0)),
                                         inventory: [],
+                                        placements: [],
                                     };
                                 }
                                 const { PiecePool, sameShape } = lib.skill.mininianquanheng;
@@ -46683,12 +46157,14 @@ const packs = function () {
             minitaoxian_info: '你可以将一张红桃牌当【桃】使用；其他角色使用【桃】时，你摸一张牌。',
             minishenzhen: '神针',
             minishenzhen_info: '回合开始时，你可以弃置任意枚“药”标记，然后选择一项：1.令等量角色各回复1点体力；2.令等量角色各失去1点体力。',
+            minigjhuishi: '慧识',
+            minigjhuishi_info: '出牌阶段限一次，若你的体力上限小于10，你可以展示牌堆顶的5张牌（不足则全部展示）并增加X点体力上限。然后你可以将这些牌交给一名角色，若其手牌数为全场最多，你减1点体力上限。（X为这些牌的花色数，你的体力上限至多为10）',
             minigjtianyi: '天翊',
-            minigjtianyi_info: '觉醒技，准备阶段，若场上的所有存活角色均于本局游戏内受到过伤害，则你加2点体力上限并回复1点体力，然后令一名角色获得〖佐幸〗。',
+            minigjtianyi_info: '觉醒技，准备阶段，若全场角色在本局游戏中均受到过伤害，你加2点体力上限，回复1点体力，然后令一名角色获得〖佐幸〗。',
             minizuoxing: '佐幸',
-            minizuoxing_info: '出牌阶段开始时，若令你获得〖佐幸〗的角色存活且体力上限大于1，则你可以令其减1点体力上限。若如此做，你于本回合获得如下效果：出牌阶段限一次，你可以视为使用一张普通锦囊牌。',
+            minizuoxing_info: '出牌阶段，若令你获得〖佐幸〗的神郭嘉存活且体力上限大于1，你可以令其减1点体力上限，并视为使用一张本回合未以此法使用过的普通锦囊牌。',
             minihuishi: '辉逝',
-            minihuishi_info: '限定技，出牌阶段，你可选择一名角色。若其有未发动的觉醒技且你的体力上限不小于存活人数，则你选择其中一个技能，令其发动此技能无视条件；若其没有未发动的觉醒技且你的体力上限不小于3，其摸四张牌。然后你减2点体力上限。',
+            minihuishi_info: '限定技，出牌阶段，若你的体力上限大于2，你可以减2点体力上限并选择一名角色，令其摸四张牌，且该角色当前未触发的觉醒技视为满足觉醒条件。',
             minishenfu: '神赋',
             minishenfu_info: '出牌阶段限一次，你可以选择一名本回合未以此法选择过的角色并选择一项：1.你对其造成1点雷属性伤害；2.令其摸一张牌；3.弃置其一张牌。若其手牌数等于体力值，则此技能视为未发动过且你摸X张牌（X为你本回合发动〖神赋〗的次数+1且至多为5）。',
             minireqixian: '七弦',
@@ -46957,11 +46433,7 @@ const packs = function () {
             mininiansongwei: '颂威',
             mininiansongwei_info: '主公技，其他魏势力的角色的判定生效后，其可以令你摸一张牌。',
             mininianquanheng: '权衡',
-            mininianquanheng_info: `每回合限一次，出牌阶段或当你受到致命伤害时，你可以进行${get.poptip({
-                id: 'mininianquanheng_俄罗的俄罗斯方块',
-                name: '“权衡”',
-                info: '每轮开始时和你的回合结束时，根据场上存活角色数分配等量与这些角色体力值相同方块数组成的随机积木块，玩家每次“权衡”须使用拥有的积木块配平两边4×4天平，在此过程中可对自己拥有的积木块进行旋转或降级，若本次有放置积木块且使得两边成功配平则“权衡”成功并保存本次天平状态，否则“权衡”成功失败且归还本次放置的积木块',
-            })}。若“权衡”成功，则你可以令场上至多X名角色回复或失去1点体力（X为本次单侧放置的方块数的一半，向上取整）。若本次“权衡”将天平填满，则清空天平，本回合你发动${get.poptip('mininianying_Mnian_sunquan')}无次数限制，且你可以令一名角色摸四张牌并回复4点体力。`,
+            mininianquanheng_info: `每轮开始时和你的回合结束时，你获得等同于场上存活角色数的随机积木，这些积木的单位格数分别等于这些角色的体力值（至多为4）。每回合限一次，出牌阶段或当你受到致命伤害时，你可以发动“权衡”，系统自动使用库存积木配平两侧4×4天平：在保证左右占用格数相同的前提下，使两侧占用格数尽可能多；若本次放置了积木并成功配平，则保存天平状态，你可以令场上至多X名角色回复或失去1点体力（X为本次单侧放置的单位格数的一半，向上取整）。若本次“权衡”将天平填满，则清空天平，本回合你发动${get.poptip('mininianying_Mnian_sunquan')}无次数限制，且你可以令一名角色摸四张牌并回复4点体力。`,
             mininianrencai: '任才',
             mininianrencai_info: '每回合限一次，一名角色重铸牌时，你可以选择一项：①使用本次进入弃牌堆的一张牌，然后获得其余进入弃牌堆的牌；②获得本次进入弃牌堆的牌。',
             mininianying_Mnian_sunquan: '念影',
