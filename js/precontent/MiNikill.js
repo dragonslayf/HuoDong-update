@@ -502,7 +502,7 @@ const packs = function () {
             Mbaby_shen_ganning: ['male', 'shen', '3/6', ['minipoxi', 'drlt_jieying'], ['wu']],
             Mbaby_shen_dianwei: ['male', 'shen', 5, ['minishenwei', 'minielai', 'minikuangxi'], ['wei']],
             Mbaby_shen_huatuo: ['male', 'shen', 1, ['minijishi', 'minitaoxian', 'minishenzhen'], ['qun']],
-            Mbaby_shen_guojia: ['male', 'shen', 3, ['reshuishi', 'minigjtianyi', 'minihuishi'], ['wei']],
+            Mbaby_shen_guojia: ['male', 'shen', 3, ['minigjhuishi', 'minigjtianyi', 'minihuishi'], ['wei']],
             Mbaby_shen_zhenji: ['female', 'shen', 3, ['minishenfu', 'minireqixian', 'minifeifu'], ['wei']],
             Mbaby_shen_daxiaoqiao: {
                 sex: 'female',
@@ -34190,6 +34190,47 @@ const packs = function () {
                     combo: 'minijishi',
                 },
             },
+            minigjhuishi: {
+                audio: 'shuishi',
+                enable: 'phaseUse',
+                usable: 1,
+                filter(event, player) {
+                    return player.maxHp < 10;
+                },
+                async content(event, trigger, player) {
+                    const cards = get.cards(5);
+                    if (!cards.length) return;
+                    await game.cardsGotoOrdering(cards);
+                    await player.showCards(cards, get.translation(player) + '发动了【慧识】');
+                    const suits = [];
+                    for (const card of cards) {
+                        const suit = get.suit(card, false);
+                        if (lib.suit.includes(suit)) suits.add(suit);
+                    }
+                    const num = Math.min(suits.length, 10 - player.maxHp);
+                    if (num > 0) await player.gainMaxHp(num);
+                    const gains = cards.filterInD();
+                    if (!gains.length) return;
+                    const result = await player.chooseTarget('慧识：是否将' + get.translation(gains) + '交给一名角色？').set('ai', target => {
+                        const { player, num, max } = get.event(), att = get.attitude(player, target);
+                        if (att <= 0) return att;
+                        if (target.countCards('h') + num >= max) return att / 3;
+                        if (target.hasSkillTag('nogain')) return att / 10;
+                        return att;
+                    }).set('num', gains.length).set('max', game.filterPlayer().reduce((num, current) => {
+                        return Math.max(num, current.countCards('h'));
+                    }, 0)).forResult();
+                    if (!result?.bool || !result.targets?.length) return;
+                    const target = result.targets[0];
+                    player.line(target, 'green');
+                    await target.gain(gains, 'gain2').set('giver', player);
+                    if (target.isMaxHandcard()) await player.loseMaxHp();
+                },
+                ai: {
+                    order: 9,
+                    result: { player: 1 },
+                },
+            },
             minigjtianyi: {
                 audio: 'stianyi',
                 derivation: 'minizuoxing',
@@ -34223,73 +34264,60 @@ const packs = function () {
             },
             minizuoxing: {
                 audio: 'zuoxing',
-                trigger: { player: 'phaseUseBegin' },
+                enable: 'phaseUse',
                 filter(event, player) {
-                    var target = player.storage.minizuoxing;
-                    return player.hasSkill('minizuoxing') && target && target.isIn() && target.maxHp > 1;
+                    const target = player.storage.minizuoxing;
+                    if (!target || !target.isIn() || target.maxHp <= 1) return false;
+                    const used = player.getStorage('minizuoxing_used');
+                    return lib.inpile.some(name => {
+                        return get.type(name) == 'trick' && !used.includes(name) && event.filterCard({ name, isCard: true }, player, event);
+                    });
                 },
-                check(event, player) {
-                    var target = player.storage.minizuoxing;
-                    if (get.attitude(player, target) <= 0) return true;
-                    return target.maxHp > 3 && !player.hasJudge('lebu');
-                },
-                prompt(event, player) {
-                    return get.prompt('minizuoxing') + '（令' + get.translation(player.storage.minizuoxing) + '减少1点体力上限，' + get.translation(player.storage.minizuoxing) + '当前体力上限：' + player.storage.minizuoxing.maxHp + '）';
-                },
-                content() {
-                    player.line(player.storage.minizuoxing, 'fire');
-                    player.storage.minizuoxing.loseMaxHp();
-                    player.addTempSkill('minizuoxing_effect');
+                chooseButton: {
+                    dialog(event, player) {
+                        const used = player.getStorage('minizuoxing_used'), list = [];
+                        for (const name of lib.inpile) {
+                            if (get.type(name) == 'trick' && !used.includes(name) && event.filterCard({ name, isCard: true }, player, event)) {
+                                list.push(['锦囊', '', name]);
+                            }
+                        }
+                        return ui.create.dialog('佐幸', [list, 'vcard']);
+                    },
+                    check(button) {
+                        return get.player().getUseValue({ name: button.link[2], isCard: true });
+                    },
+                    backup(links, player) {
+                        const name = links[0][2];
+                        return {
+                            audio: 'zuoxing',
+                            viewAs: { name, isCard: true },
+                            filterCard: () => false,
+                            selectCard: -1,
+                            popname: true,
+                            log: false,
+                            async precontent(event, trigger, player) {
+                                const target = player.storage.minizuoxing;
+                                player.logSkill('minizuoxing', target);
+                                await target.loseMaxHp();
+                                player.addTempSkill('minizuoxing_used', 'phaseAfter');
+                                player.markAuto('minizuoxing_used', [event.result.card.name]);
+                            },
+                        };
+                    },
+                    prompt(links, player) {
+                        return '请选择' + get.translation(links[0][2]) + '的目标';
+                    },
                 },
                 subSkill: {
-                    effect: {
+                    used: {
                         charlotte: true,
-                        audio: 'zuoxing',
-                        enable: 'phaseUse',
-                        filter(event, player) {
-                            if (player.hasSkill('minizuoxing_used', null, null, false)) return false;
-                            for (var i of lib.inpile) {
-                                if (get.type(i) == 'trick' && event.filterCard({ name: i, isCard: true }, player, event)) return true;
-                            }
-                            return false;
-                        },
-                        chooseButton: {
-                            dialog(event, player) {
-                                var list = [];
-                                for (var i of lib.inpile) {
-                                    if (get.type(i) == 'trick' && event.filterCard({ name: i, isCard: true }, player, event)) list.push(['锦囊', '', i]);
-                                }
-                                return ui.create.dialog('佐幸', [list, 'vcard']);
-                            },
-                            check(button) {
-                                return _status.event.player.getUseValue({ name: button.link[2], isCard: true });
-                            },
-                            backup(links, player) {
-                                return {
-                                    audio: 'zuoxing',
-                                    viewAs: {
-                                        name: links[0][2],
-                                        isCard: true,
-                                    },
-                                    filterCard: () => false,
-                                    selectCard: -1,
-                                    popname: true,
-                                    precontent() {
-                                        player.addTempSkill('minizuoxing_used', 'phaseUseEnd');
-                                    },
-                                }
-                            },
-                            prompt(links, player) {
-                                return '请选择' + get.translation(links[0][2]) + '的目标';
-                            },
-                        },
-                        ai: {
-                            order: 1,
-                            result: { player: 1 },
-                        },
+                        onremove: true,
+                        mark: true,
+                        marktext: '佐',
+                        intro: { content: '本回合已通过〖佐幸〗使用过$牌' },
                     },
-                    used: { charlotte: true },
                 },
+                ai: { order: 1, result: { player: 1 } },
             },
             minihuishi: {
                 audio: 'sghuishi',
@@ -34297,65 +34325,51 @@ const packs = function () {
                 limited: true,
                 skillAnimation: true,
                 animationColor: 'water',
+                filter(event, player) {
+                    return player.maxHp > 2;
+                },
                 filterTarget: true,
-                selectTarget() {
-                    var player = _status.event.player;
-                    for (var target of game.filterPlayer()) {
-                        var list = target.getSkills(null, false, false).filter(function (skill) {
-                            if (target.awakenedSkills.includes(skill)) return false;
-                            return lib.skill[skill]?.juexingji;
-                        });
-                        var bool1 = (!list.length && player.maxHp >= 3);
-                        var bool2 = (list.length && player.maxHp >= game.players.length);
-                        target.prompt((bool1 ? '可摸牌' : '') + ((bool1 && bool2) ? '<br>' : '') + (bool2 ? '可觉醒' : ''));
-                    }
-                    return 1;
-                },
-                content() {
-                    'step 0'
-                    player.awakenSkill('minihuishi');
-                    var list = target.getSkills(null, false, false).filter(function (skill) {
-                        if (target.awakenedSkills.includes(skill)) return false;
-                        return lib.skill[skill]?.juexingji;
+                async content(event, trigger, player) {
+                    const { target } = event;
+                    player.awakenSkill(event.name);
+                    await player.loseMaxHp(2);
+                    await target.draw(4);
+                    const list = target.getSkills(null, false, false).filter(skill => {
+                        return get.info(skill)?.juexingji && !target.awakenedSkills.includes(skill);
                     });
-                    if (!list.length && player.maxHp >= 3) {
-                        target.draw(4);
-                        event.goto(2);
-                        return;
-                    }
-                    if (list.length && player.maxHp >= game.players.length) {
-                        if (list.length == 1) event._result = { control: list[0] };
-                        else player.chooseControl(list).set('prompt', '选择一个觉醒技，令' + get.translation(target) + '可无视条件发动该技能');
-                    }
-                    else event.goto(2);
-                    'step 1'
-                    target.storage.minihuishi_mark = result.control;
+                    if (!list.length) return;
+                    const storage = target.getStorage('minihuishi_mark');
+                    target.storage.minihuishi_mark = Array.isArray(storage) ? storage.slice() : storage ? [storage] : [];
+                    target.storage.minihuishi_mark.addArray(list);
                     target.markSkill('minihuishi_mark');
-                    var info = lib.skill[result.control];
-                    if (info.filter && !info.charlotte && !info.minihuishi_filter) {
-                        info.minihuishi_filter = info.filter;
-                        info.filter = function (event, player) {
-                            if (player.storage.minihuishi_mark) return true;
-                            return this.minihuishi_filter.apply(this, arguments);
-                        };
+                    for (const skill of list) {
+                        const info = get.info(skill);
+                        if (info.filter && !info.charlotte && !info.minihuishi_filter) {
+                            info.minihuishi_filter = info.filter;
+                            info.filter = function (event, player, ...args) {
+                                if (player.getStorage('minihuishi_mark').includes(skill)) return true;
+                                return info.minihuishi_filter(event, player, ...args);
+                            };
+                        }
                     }
-                    'step 2'
-                    player.loseMaxHp(2);
                 },
-                subSkill: { mark: { intro: { content: '发动【$】时无视条件' } } },
+                subSkill: {
+                    mark: {
+                        charlotte: true,
+                        intro: { content: '以下觉醒技视为满足觉醒条件：$' },
+                    },
+                },
                 ai: {
                     order: 0.1,
                     expose: 0.2,
                     result: {
                         target(player, target) {
-                            if (player.maxHp < 5) return 0;
-                            var list = target.getSkills(null, false, false).filter(function (skill) {
-                                return lib.skill[skill]?.juexingji;
+                            const list = target.getSkills(null, false, false).filter(skill => {
+                                return get.info(skill)?.juexingji && !target.awakenedSkills.includes(skill);
                             });
-                            if (list.length && player.maxHp >= game.players.length) return 10 * list.length;
-                            if (target.hasJudge('lebu') || target.hasSkillTag('nogain')) return 0;
-                            if (!list.length && player.maxHp >= 3) return 4;
-                            return 0;
+                            if (list.length) return 4 + 6 * list.length;
+                            if (target.hasSkillTag('nogain')) return 0;
+                            return 4;
                         },
                     },
                 },
@@ -46143,12 +46157,14 @@ const packs = function () {
             minitaoxian_info: '你可以将一张红桃牌当【桃】使用；其他角色使用【桃】时，你摸一张牌。',
             minishenzhen: '神针',
             minishenzhen_info: '回合开始时，你可以弃置任意枚“药”标记，然后选择一项：1.令等量角色各回复1点体力；2.令等量角色各失去1点体力。',
+            minigjhuishi: '慧识',
+            minigjhuishi_info: '出牌阶段限一次，若你的体力上限小于10，你可以展示牌堆顶的5张牌（不足则全部展示）并增加X点体力上限。然后你可以将这些牌交给一名角色，若其手牌数为全场最多，你减1点体力上限。（X为这些牌的花色数，你的体力上限至多为10）',
             minigjtianyi: '天翊',
-            minigjtianyi_info: '觉醒技，准备阶段，若场上的所有存活角色均于本局游戏内受到过伤害，则你加2点体力上限并回复1点体力，然后令一名角色获得〖佐幸〗。',
+            minigjtianyi_info: '觉醒技，准备阶段，若全场角色在本局游戏中均受到过伤害，你加2点体力上限，回复1点体力，然后令一名角色获得〖佐幸〗。',
             minizuoxing: '佐幸',
-            minizuoxing_info: '出牌阶段开始时，若令你获得〖佐幸〗的角色存活且体力上限大于1，则你可以令其减1点体力上限。若如此做，你于本回合获得如下效果：出牌阶段限一次，你可以视为使用一张普通锦囊牌。',
+            minizuoxing_info: '出牌阶段，若令你获得〖佐幸〗的神郭嘉存活且体力上限大于1，你可以令其减1点体力上限，并视为使用一张本回合未以此法使用过的普通锦囊牌。',
             minihuishi: '辉逝',
-            minihuishi_info: '限定技，出牌阶段，你可选择一名角色。若其有未发动的觉醒技且你的体力上限不小于存活人数，则你选择其中一个技能，令其发动此技能无视条件；若其没有未发动的觉醒技且你的体力上限不小于3，其摸四张牌。然后你减2点体力上限。',
+            minihuishi_info: '限定技，出牌阶段，若你的体力上限大于2，你可以减2点体力上限并选择一名角色，令其摸四张牌，且该角色当前未触发的觉醒技视为满足觉醒条件。',
             minishenfu: '神赋',
             minishenfu_info: '出牌阶段限一次，你可以选择一名本回合未以此法选择过的角色并选择一项：1.你对其造成1点雷属性伤害；2.令其摸一张牌；3.弃置其一张牌。若其手牌数等于体力值，则此技能视为未发动过且你摸X张牌（X为你本回合发动〖神赋〗的次数+1且至多为5）。',
             minireqixian: '七弦',
